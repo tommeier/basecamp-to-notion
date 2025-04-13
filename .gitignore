@@ -1,0 +1,11 @@
+cache
+*.zip
+*.patch
+secrets.rb
+manual_uploads/
+.env
+
+*.db
+*.sql
+*.db-shm
+*.db-wal
