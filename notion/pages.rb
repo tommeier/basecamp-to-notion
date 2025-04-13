@@ -4,7 +4,7 @@ require_relative "../config"
 require_relative "../utils/logging"
 require_relative "./api"
 require_relative "./utils"
-require_relative "./blocks" # ✅ Add this to use Blocks.append
+require_relative "./blocks"
 
 module Notion
   module Pages
@@ -19,14 +19,16 @@ module Notion
 
       parent_id = Notion::Utils.format_uuid(parent_id, context: context)
 
-      log "🆕 Creating Notion page: #{project['name']} under parent: #{parent_id}#{context ? " (#{context})" : ""}"
+      project_name = project["name"]
+
+      log "🆕 Creating Notion page: #{project_name} under parent: #{parent_id}#{context ? " (#{context})" : ""}"
 
       payload = {
         parent: { page_id: parent_id },
         properties: {
           title: [
             {
-              text: { content: project["name"] }
+              text: { content: project_name }
             }
           ]
         },
@@ -48,12 +50,30 @@ module Notion
 
       log "✅ Notion page created: #{page_id}"
 
-      # ✅ Insert migration banner after page creation
+      # ✅ Insert migration banner
       banner = migration_banner_block(project, url)
       Notion::Blocks.append(page_id, [banner], context: "#{context} - Migration Banner")
       log "🧩 Inserted migration banner block for page #{page_id}"
 
-      # ✅ Append any children blocks
+      # ✅ Insert archive banner if applicable
+      if project["archived"] == true
+        archive_notice = {
+          object: "block",
+          type: "callout",
+          callout: {
+            icon: { type: "emoji", emoji: "📦" },
+            rich_text: [{
+              type: "text",
+              text: { content: "⚠️ This project was archived in Basecamp." }
+            }],
+            color: "yellow_background"
+          }
+        }
+        Notion::Blocks.append(page_id, [archive_notice], context: "#{context} - Archive Notice")
+        log "🧩 Inserted archive notice block for page #{page_id}"
+      end
+
+      # ✅ Append children if provided
       unless children.empty?
         log "🧩 Appending initial children to page #{page_id} (#{children.size} blocks)"
         Notion::Blocks.append(page_id, children, context: "#{context} - Initial Children")
@@ -64,8 +84,6 @@ module Notion
 
     def self.migration_banner_block(project, url = nil)
       source_url = url || project["url"]
-
-      # ✅ Timestamp includes time for accuracy
       timestamp = Time.now.utc.strftime("%d/%m/%Y at %H:%M UTC")
 
       rich_text = [

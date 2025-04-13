@@ -23,19 +23,38 @@ module Notion
       # ✅ Set global MediaExtractor headers
       ::Utils::MediaExtractor.basecamp_headers = headers.freeze
 
+      # ✅ Print runtime config for clarity
+      log "🔧 Runtime configuration:"
+      log "  BASECAMP_ACCOUNT_ID = #{BASECAMP_ACCOUNT_ID}"
+      log "  FILTER_PROJECT_LABEL = #{FILTER_PROJECT_LABEL.inspect}"
+      log "  FILTER_TOOL_NAME = #{FILTER_TOOL_NAME.inspect}"
+      log "  INCLUDE_ARCHIVED = #{ENV["INCLUDE_ARCHIVED"] == "true"}"
+      log "  RESET = #{ENV["RESET"] == "true"}"
+      log "  CACHE_ENABLED = #{CACHE_ENABLED}"
+
       # ✅ Initialize progress tracker
       progress = ProgressTracker.new
 
       log "🔄 Fetching projects..."
       uri = URI("https://3.basecampapi.com/#{BASECAMP_ACCOUNT_ID}/projects.json")
-      log "📥 Fetching all projects..."
+      log "📥 Fetching active projects..."
       projects = Basecamp::Fetch.load_json(uri, headers)
-      log "📦 Total projects fetched: #{projects.size}"
+      log "📦 Active projects fetched: #{projects.size}"
+
+      if ENV["INCLUDE_ARCHIVED"] == "true"
+        log "📥 INCLUDE_ARCHIVED=true — fetching archived projects..."
+        archived_uri = URI("https://3.basecampapi.com/#{BASECAMP_ACCOUNT_ID}/projects.json?status=archived")
+        archived_projects = Basecamp::Fetch.load_json(archived_uri, headers)
+        log "📦 Archived projects fetched: #{archived_projects.size}"
+        projects.concat(archived_projects)
+      end
+
+      log "📦 Total projects fetched (active + archived if enabled): #{projects.size}"
 
       matched_projects = projects.select { |proj| proj["name"] =~ /#{FILTER_PROJECT_LABEL}/i }
 
       if matched_projects.empty?
-        log "⚠️ No matching projects found"
+        log "⚠️ No matching projects found with FILTER_PROJECT_LABEL=#{FILTER_PROJECT_LABEL.inspect}"
         return
       end
 
@@ -46,7 +65,6 @@ module Notion
         start_time = Time.now
 
         begin
-          # ✅ Pass progress tracker into process_project
           Notion::Process.process_project(proj, NOTION_ROOT_PAGE_ID, headers, progress)
         rescue => e
           error "❌ Error syncing project '#{proj['name']}': #{e.message}"

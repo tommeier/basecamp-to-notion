@@ -21,16 +21,19 @@ module Notion
       project_start_time = Time.now
       project_page_id = nil
 
-      # ✅ Check if project already exists
+      # ✅ Detect archive status early
+      is_archived = project["status"] == "archived"
+      project_name = is_archived ? "📦 #{project["name"]}" : project["name"]
+
       existing_project = progress.get_project(project["id"])
       if existing_project && existing_project["notion_page_id"]
         project_page_id = existing_project["notion_page_id"]
-        log "🧭 Reusing existing Notion project page: #{project_page_id} for '#{project["name"]}'"
+        log "🧭 Reusing existing Notion project page: #{project_page_id} for '#{project_name}'"
       else
         raise Interrupt, "Shutdown before project creation" if $shutdown
 
-        log "🆕 Creating Notion page for project: #{project["name"]}"
-        project_page = Notion::Pages.create_page(project, notion_root_page_id, children: [])
+        log "🆕 Creating Notion page for project: #{project_name}"
+        project_page = Notion::Pages.create_page(project.merge("name" => project_name, "archived" => is_archived), notion_root_page_id, children: [])
         project_page_id = project_page["id"]
 
         unless project_page_id
@@ -39,7 +42,7 @@ module Notion
 
         progress.upsert_project(
           basecamp_id: project["id"],
-          name: project["name"],
+          name: project_name,
           notion_page_id: project_page_id
         )
       end
@@ -52,7 +55,6 @@ module Notion
 
       tools = (project["dock"] || [])
 
-      # ✅ Parallelize tools!
       threads = tools.map do |tool|
         Thread.new do
           begin
@@ -152,9 +154,8 @@ module Notion
         end
       end
 
-      threads.each(&:join) # ✅ Wait for all tools to complete
+      threads.each(&:join)
 
-      # ✅ Check global shutdown before final index append
       if $shutdown
         log "🛑 Global shutdown detected before final index append. Skipping index block creation."
         return
@@ -179,7 +180,7 @@ module Notion
       end
 
       duration = Time.now - project_start_time
-      log "⏱️ Project '#{project['name']}' completed in #{duration.round(2)}s"
+      log "⏱️ Project '#{project_name}' completed in #{duration.round(2)}s"
     end
   end
 end

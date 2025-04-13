@@ -1,11 +1,37 @@
-cache
-*.zip
-*.patch
-secrets.rb
-manual_uploads/
-.env
 
+# .gitignore
+
+# Ignore environment secrets
+.env
+.env.sample # optional, if you want to not commit the sample
+
+# Ignore local database\
 *.db
 *.sql
+*.sqlite
 *.db-shm
 *.db-wal
+
+# Ignore debug and temp files
+/tmp/
+./tmp/
+tmp/
+debug_*.zip
+*.zip
+*.patch
+manual_uploads/
+
+# Ignore cached API responses
+/cache/
+cache/
+
+# Ignore Ruby specific
+*.log
+*.gem
+*.bundle
+.bundle
+vendor/
+
+# Ignore system files
+.DS_Store
+Thumbs.db

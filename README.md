@@ -135,6 +135,11 @@ ruby basecamp_to_notion_via_api.rb
 - ✅ Progress is saved in `sync_progress.db`
 - ✅ Resume safely after interruption!
 
+- **Include archived Basecamp projects**:
+
+  ```bash
+  INCLUDE_ARCHIVED=true ruby basecamp_to_notion_via_api.rb
+  ```
 ---
 
 ## 🧩 Filters (Optional)

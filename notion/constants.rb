@@ -1,4 +1,4 @@
-# notion/constants.rb
+# /notion/constants.rb
 
 module Notion
   require_relative './handlers/message_board'
@@ -10,12 +10,16 @@ module Notion
   require_relative './handlers/inbox'
   require_relative './handlers/kanban_board'
 
-  MAX_BLOCKS_PER_REQUEST = 100 # 100 limit
-  # Maximum character length for Notion text content
-  MAX_NOTION_TEXT_LENGTH = 2000 # 2000-4000 limit
-  MAX_BLOCKS_PER_TOOL_PAGE = 800 # 1000 hard limit
-  MAX_BLOCKS_PER_PAGE_CREATION = 100 # 100 hard limit
-  MIGRATION_BANNER_BLOCKS = 1
+  MAX_BLOCKS_PER_REQUEST = 100 # Notion API hard limit
+  MAX_NOTION_TEXT_LENGTH = 2000 # Text length safety
+  MAX_BLOCKS_PER_TOOL_PAGE = 800 # Safe under Notion hard limit of ~1000
+  MAX_BLOCKS_PER_PAGE_CREATION = 100 # Page creation limit (API constraint)
+
+  # 🚨 System-level blocks (always added to new pages)
+  # - Migration banner = 1 block
+  # - Archive notice (if applicable) = 1 block
+  # ✅ Always assume 2 blocks for safety
+  SYSTEM_BLOCKS_AT_CREATION = 2
 
   TOOL_HANDLERS = {
     "message_board" => Notion::Handlers::MessageBoard,

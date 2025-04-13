@@ -53,8 +53,10 @@ module Notion
 
         log "📝 Creating subpage: #{subpage_title} with #{batch_blocks.size} blocks"
 
-        initial_blocks = batch_blocks.first(Notion::MAX_BLOCKS_PER_PAGE_CREATION - Notion::MIGRATION_BANNER_BLOCKS)
-        remaining_blocks = batch_blocks.drop(Notion::MAX_BLOCKS_PER_PAGE_CREATION)
+        initial_blocks = batch_blocks.first(
+          Notion::MAX_BLOCKS_PER_PAGE_CREATION - Notion::SYSTEM_BLOCKS_AT_CREATION
+        )
+        remaining_blocks = batch_blocks.drop(initial_blocks.size)
 
         subpage = Notion::Pages.create_page(
           { "name" => subpage_title, "url" => parent_tool_url },
