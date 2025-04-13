@@ -267,6 +267,8 @@ Debug mode:
 
 ## 📋 Roadmap (Potentially)
 
+- [ ] Bug: Due to how we recurse through HTML elements provided by Basecamp dump, in some situations we're doubling up, whole sentences can be repeated.
+- [ ] Bug: When some links/avatars or similar HTML tags are removed, we're not spacing around the text
 - [ ] Delta sync: sync only updated Basecamp content
 - [ ] Parallelise projects (right now we parallelise tools per project)
 - [ ] Media upload support (when Notion API allows)

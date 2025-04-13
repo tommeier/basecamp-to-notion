@@ -88,12 +88,13 @@ if ENV["RESET"] == "true"
     puts "ℹ️ No ./tmp/ directory found. Skipping."
   end
 
-  if Dir.exist?("./cache")
-    FileUtils.rm_rf(Dir["./cache/*"])
-    puts "🧹 Cleared ./cache/ files."
-  else
-    puts "ℹ️ No ./cache/ directory found. Skipping."
-  end
+  # This clears cached login
+  # if Dir.exist?("./cache")
+  #   FileUtils.rm_rf(Dir["./cache/*"])
+  #   puts "🧹 Cleared ./cache/ files."
+  # else
+  #   puts "ℹ️ No ./cache/ directory found. Skipping."
+  # end
 
   puts "✅ Reset complete. Starting fresh sync."
 end
