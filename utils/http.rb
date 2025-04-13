@@ -1,5 +1,3 @@
-# utils/http.rb
-
 require 'net/http'
 require 'json'
 require 'uri'
@@ -41,9 +39,11 @@ module Utils
         raise "🚫 [HTTP] Illegal POST detected for /blocks/*/children — should be PATCH! Context: #{context}, Caller: #{caller.first}"
       end
 
-
       attempt = 0
+
       with_retries do
+        raise Interrupt, "Shutdown during HTTP request" if $shutdown
+
         timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
         context_slug = (context || 'no_context').downcase.gsub(/\s+/, '_').gsub(/[^\w\-]/, '')
         @@payload_counter += 1
@@ -55,8 +55,6 @@ module Utils
         response_filename = "#{base_filename}_response.json"
 
         log_prefix = "📤 [HTTP #{method.to_s.upcase}]"
-
-        # Log caller (who triggered this HTTP request)
         caller_location = caller.first
         debug "#{log_prefix} Caller: #{caller_location}"
 
@@ -72,11 +70,6 @@ module Utils
           File.write(request_filename, payload_json)
         else
           debug "#{log_prefix} Preparing request to #{uri}#{context ? " (#{context})" : ""} (No payload)"
-        end
-
-        if method == :post && uri.path.match?(/\/blocks\/[^\/]+\/children/)
-          error "🚨 [HTTP] POST method used for block children endpoint — Notion API expects PATCH. URI: #{uri}"
-          raise "Invalid POST to /blocks/:id/children — should be PATCH!"
         end
 
         http = Net::HTTP.new(uri.host, uri.port)
@@ -121,31 +114,31 @@ module Utils
         end
 
         JSON.parse(body)
-      rescue => e
-        attempt += 1
-        raise if attempt >= 5
-
-        sleep_time = (2 ** attempt) + rand(1..3)
-        error "🔁 Retry ##{attempt} in #{sleep_time}s due to: #{e.message}"
-        sleep sleep_time
-        retry
       end
     end
 
     def self.with_retries(max_attempts = 5)
       attempt = 0
       begin
+        raise Interrupt, "Shutdown requested before attempt #{attempt + 1}" if $shutdown
+
         yield
+      rescue Interrupt => e
+        error "🛑 Interrupt detected during HTTP request: #{e.message}"
+        raise e
       rescue => e
         attempt += 1
-        if attempt < max_attempts
-          sleep_time = (2 ** attempt) + rand(1..3)
-          error "🔁 Retry ##{attempt} in #{sleep_time}s due to: #{e.message}"
-          sleep sleep_time
-          retry
-        else
-          raise e
+        raise if attempt >= max_attempts || $shutdown
+
+        sleep_time = (2 ** attempt) + rand(1..3)
+        error "🔁 Retry ##{attempt} in #{sleep_time}s due to: #{e.message}"
+
+        sleep_time.times do
+          sleep 1
+          raise Interrupt, "Shutdown during retry sleep" if $shutdown
         end
+
+        retry
       end
     end
   end

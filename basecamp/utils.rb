@@ -11,7 +11,7 @@ module Basecamp
 
       begin
         if $shutdown
-          log "🛑 Global shutdown flag detected before retry. Exiting early."
+          log "🛑 Global shutdown flag detected before attempt ##{attempt + 1}. Exiting early."
           raise Interrupt, "Shutdown during with_retries"
         end
 
@@ -27,7 +27,12 @@ module Basecamp
         if attempt < max_attempts
           sleep_time = 2 ** attempt
           error("🔁 Retry ##{attempt} in #{sleep_time}s due to: #{e.message}")
-          sleep sleep_time
+
+          sleep_time.times do
+            sleep 1
+            raise Interrupt, "Shutdown during retry sleep" if $shutdown
+          end
+
           retry
         else
           raise e

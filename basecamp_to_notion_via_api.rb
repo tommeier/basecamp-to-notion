@@ -44,24 +44,28 @@ cleanup_debug_files = proc do
   end
 end
 
-# === ✅ Signal handling: set shutdown flag and exit cleanly ===
+# === ✅ Signal handling: set shutdown flag only ===
 Signal.trap("INT") do
   puts "\n🛑 Interrupt received (Ctrl+C). Initiating shutdown..."
   $shutdown = true
-  cleanup_debug_files.call
   exit 130 # 128 + SIGINT
 end
 
 Signal.trap("TERM") do
   puts "\n🛑 Termination signal received (SIGTERM). Initiating shutdown..."
   $shutdown = true
-  cleanup_debug_files.call
   exit 143 # 128 + SIGTERM
 end
 
 # === ✅ At exit cleanup ===
 at_exit do
   cleanup_debug_files.call
+
+  if $shutdown
+    puts "\n🛑 Shutdown complete. Sync interrupted by user."
+  else
+    puts "\n✅ Sync completed successfully."
+  end
 end
 
 # === ✅ Start cleanup of old temp files
