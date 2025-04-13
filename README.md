@@ -186,6 +186,18 @@ Final sync report:
 
 ---
 
+## 🧩 Reset Mode
+
+If you want to perform a full fresh sync, starting from a clean state, you can enable `RESET` mode.
+
+Set the environment variable:
+
+```bash
+RESET=true ruby basecamp_to_notion_via_api.rb
+```
+
+---
+
 ## 🧩 Limitations & Notes on Files and Assets
 
 ### 🚧 Basecamp Files Are Protected
@@ -285,3 +297,16 @@ If you get stuck:
 - ✅ Open any handler file to customize Notion formatting
 
 ---
+
+### ❓ FAQ
+
+**Q: Will `RESET=true` delete my existing Notion pages?**
+A: No. RESET only clears local files and progress tracking. Existing Notion pages must be deleted manually if you want a fully clean start.
+
+**Q: Can I resume a sync if my internet drops?**
+A: Yes! The script is checkpointed and safe to resume. Simply run it again without `RESET=true`.
+
+**Q: Can I run with filters and RESET together?**
+A: Yes. For example:
+```bash
+RESET=true FILTER_PROJECT_LABEL="My Project" ruby basecamp_to_notion_via_api.rb

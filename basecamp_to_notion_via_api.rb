@@ -6,8 +6,10 @@ require_relative "./basecamp/fetch"
 require_relative "./notion/sync"
 require_relative "./utils/cleanup"
 require_relative "./utils/logging"
+require_relative "./database/schema" # ✅ Ensure schema is initialized
 
 require 'zip'
+require 'fileutils'
 
 puts "🚀 Starting Basecamp → Notion sync..."
 
@@ -67,6 +69,37 @@ at_exit do
     puts "\n✅ Sync completed successfully."
   end
 end
+
+# === ✅ RESET mode: full fresh start ===
+if ENV["RESET"] == "true"
+  puts "🚨 RESET mode enabled! Deleting progress DB and temp files for fresh start..."
+
+  if File.exist?(DB_PATH)
+    File.delete(DB_PATH)
+    puts "🧹 Deleted progress DB: #{DB_PATH}"
+  else
+    puts "ℹ️ No progress DB found. Skipping."
+  end
+
+  if Dir.exist?("./tmp")
+    FileUtils.rm_rf(Dir["./tmp/*"])
+    puts "🧹 Cleared ./tmp/ debug files."
+  else
+    puts "ℹ️ No ./tmp/ directory found. Skipping."
+  end
+
+  if Dir.exist?("./cache")
+    FileUtils.rm_rf(Dir["./cache/*"])
+    puts "🧹 Cleared ./cache/ files."
+  else
+    puts "ℹ️ No ./cache/ directory found. Skipping."
+  end
+
+  puts "✅ Reset complete. Starting fresh sync."
+end
+
+# === ✅ Ensure database schema exists before starting parallel threads ===
+setup_database
 
 # === ✅ Start cleanup of old temp files
 Cleanup.run

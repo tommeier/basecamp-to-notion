@@ -25,14 +25,14 @@ module Basecamp
         puts "✅ BASECAMP_REDIRECT_URI: #{BASECAMP_REDIRECT_URI.inspect}"
 
         puts "🚀 Payload: #{{
-  type: "web_server",
-  client_id: BASECAMP_CLIENT_ID,
-  client_secret: BASECAMP_CLIENT_SECRET,
-  redirect_uri: BASECAMP_REDIRECT_URI,
-  code: code
-}.inspect}"
+          type: "web_server",
+          client_id: BASECAMP_CLIENT_ID,
+          client_secret: BASECAMP_CLIENT_SECRET,
+          redirect_uri: BASECAMP_REDIRECT_URI,
+          code: code
+        }.inspect}"
 
-        res = Utils::HTTP.post_json(uri, {
+        res = ::Utils::HTTP.post_json(uri, {
           type: "web_server",
           client_id: BASECAMP_CLIENT_ID,
           client_secret: BASECAMP_CLIENT_SECRET,
