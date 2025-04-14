@@ -1,5 +1,5 @@
 # /notion/utils.rb
-
+#
 require 'time'
 require_relative "../utils/logging"
 require_relative "./constants"
@@ -9,10 +9,10 @@ module Notion
   module Utils
     extend ::Utils::Logging
 
-    # ✅ UUID formatter
+    # ✅ UUID formatter — ensures Notion-safe formatting
     def self.format_uuid(id, context: nil)
       unless id.is_a?(String)
-        warn "⚠️ format_uuid received nil or invalid input: #{id.inspect}#{context ? " (#{context})" : ""}\nCaller: #{caller(1..3).join("\n")}"
+        warn "⚠️ format_uuid received invalid input: #{id.inspect}#{context ? " (#{context})" : ""}\nCaller: #{caller(1..3).join("\n")}"
         return nil
       end
 
@@ -40,6 +40,7 @@ module Notion
       timestamp
     end
 
+    # ✅ Block splitting for large Notion tool pages
     def self.split_blocks_into_subpages(blocks, base_title, emoji, parent_id, parent_tool_url:, limit: Notion::MAX_BLOCKS_PER_TOOL_PAGE - 1)
       raise "🚫 parent_id is nil for split_blocks_into_subpages (#{base_title})" if parent_id.nil?
       raise "🚫 blocks is nil for split_blocks_into_subpages (#{base_title})" if blocks.nil?
@@ -53,6 +54,7 @@ module Notion
 
         log "📝 Creating subpage: #{subpage_title} with #{batch_blocks.size} blocks"
 
+        # ✅ Correct block limit respecting system-level blocks
         initial_blocks = batch_blocks.first(
           Notion::MAX_BLOCKS_PER_PAGE_CREATION - Notion::SYSTEM_BLOCKS_AT_CREATION
         )

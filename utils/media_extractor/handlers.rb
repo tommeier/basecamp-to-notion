@@ -88,43 +88,35 @@ module Utils
 
       def self.process_div_or_paragraph(node, context, parent_page_id)
         blocks = []
-        fragments = []
-        current_fragment = []
+        embed_blocks = []
 
+        # ✅ Collect all fragments into single rich_text array
+        full_rich_text = []
         node.children.each do |child|
-          if child.name == 'br'
-            fragments << current_fragment unless current_fragment.empty?
-            current_fragment = []
-          else
-            current_fragment << child
-          end
-        end
-        fragments << current_fragment unless current_fragment.empty?
+          next if child.comment?
 
-        debug "🧩 [process_div_or_paragraph] (#{context}): #{fragments.size} fragments"
-
-        fragments.each_with_index do |fragment, idx|
-          rich_text, embed_blocks = ::Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(fragment, context, parent_page_id)
-          next if rich_text.compact.empty?
-
-          rich_text_chunks = Helpers.chunk_rich_text(rich_text)
-          Logger.debug_chunk_summary(rich_text_chunks, context: context, label: "Div/P Fragment #{idx + 1}")
-
-          rich_text_chunks.each_with_index do |chunk, chunk_idx|
-            next if chunk.compact.empty?
-
-            block = {
-              object: "block",
-              type: "paragraph",
-              paragraph: { rich_text: chunk.compact }
-            }
-            debug "🧩 [process_div_or_paragraph] Built block #{idx + 1}.#{chunk_idx + 1} (#{context}): #{block.to_json[0..500]}"
-            blocks << block
-          end
-
-          blocks.concat(embed_blocks.compact) if embed_blocks.any?
+          child_rich_text, child_embeds = ::Utils::MediaExtractor::RichText.extract_rich_text_from_fragment([child], context, parent_page_id)
+          full_rich_text.concat(child_rich_text.compact) if child_rich_text.any?
+          embed_blocks.concat(child_embeds.compact) if child_embeds.any?
         end
 
+        # ✅ Chunk if needed (very long lines)
+        rich_text_chunks = Helpers.chunk_rich_text(full_rich_text)
+        Logger.debug_chunk_summary(rich_text_chunks, context: context, label: "Div/P Full RichText")
+
+        rich_text_chunks.each_with_index do |chunk, chunk_idx|
+          next if chunk.compact.empty?
+
+          block = {
+            object: "block",
+            type: "paragraph",
+            paragraph: { rich_text: chunk.compact }
+          }
+          debug "🧩 [process_div_or_paragraph] Built block chunk #{chunk_idx + 1}/#{rich_text_chunks.size} (#{context}): #{block.to_json[0..500]}"
+          blocks << block
+        end
+
+        blocks.concat(embed_blocks) if embed_blocks.any?
         blocks
       end
 

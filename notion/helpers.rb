@@ -22,6 +22,7 @@ module Notion
       debug "🧩 [text_block] MediaExtractor returned #{total_blocks} blocks (text: #{blocks.size}, embeds: #{embed_blocks.size}) for context: #{context}"
       debug_block_previews(blocks + embed_blocks, context: context, label: 'text_block')
 
+      # ✅ Safe return
       (blocks + embed_blocks).compact
     end
 
@@ -35,16 +36,21 @@ module Notion
 
       return [] if blocks.compact.empty?
 
-      first_block_rich_text = (blocks.first.dig(:paragraph, :rich_text) || []).compact
-      return [] if first_block_rich_text.empty?
+      if blocks.size > 1
+        warn "⚠️ [heading_block] Multiple blocks detected (#{blocks.size}) — expected single rich_text block. Context: #{context}"
+      end
 
-      debug "🧩 [heading_block] Building heading level #{level} block for context: #{context}, rich_text size: #{first_block_rich_text.size}"
-      debug_rich_text_preview(first_block_rich_text, context: context, label: "heading_block rich_text")
+      first_block = blocks.shift
+      rich_text = (first_block.dig(:paragraph, :rich_text) || []).compact
+      return [] if rich_text.empty?
+
+      debug "🧩 [heading_block] Building heading level #{level} block for context: #{context}, rich_text size: #{rich_text.size}"
+      debug_rich_text_preview(rich_text, context: context, label: "heading_block rich_text")
 
       [{
         object: "block",
         type: "heading_#{level}",
-        "heading_#{level}": { rich_text: first_block_rich_text }
+        "heading_#{level}": { rich_text: rich_text }
       }] + embed_blocks.compact
     end
 
@@ -58,23 +64,28 @@ module Notion
 
       return [] if blocks.compact.empty?
 
-      first_block_rich_text = (blocks.first.dig(:paragraph, :rich_text) || []).compact
-      return [] if first_block_rich_text.empty?
+      if blocks.size > 1
+        warn "⚠️ [callout_block] Multiple blocks detected (#{blocks.size}) — expected single rich_text block. Context: #{context}"
+      end
 
-      debug "🧩 [callout_block] Building callout block for context: #{context}, rich_text size: #{first_block_rich_text.size}"
-      debug_rich_text_preview(first_block_rich_text, context: context, label: "callout_block rich_text")
+      first_block = blocks.shift
+      rich_text = (first_block.dig(:paragraph, :rich_text) || []).compact
+      return [] if rich_text.empty?
+
+      debug "🧩 [callout_block] Building callout block for context: #{context}, rich_text size: #{rich_text.size}"
+      debug_rich_text_preview(rich_text, context: context, label: "callout_block rich_text")
 
       [{
         object: "block",
         type: "callout",
         callout: {
           icon: { type: "emoji", emoji: emoji },
-          rich_text: first_block_rich_text
+          rich_text: rich_text
         }
       }] + embed_blocks.compact
     end
 
-    # ✅ Label + link block (avoids dead links in merged strings)
+    # ✅ Label + link block
     def self.label_and_link_block(label, url, context = nil)
       return [] unless url && !url.strip.empty?
 
