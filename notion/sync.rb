@@ -15,6 +15,8 @@ module Notion
   module Sync
     extend ::Utils::Logging
 
+    MAX_PROJECT_THREADS = ENV.fetch("MAX_PROJECT_THREADS", "4").to_i
+
     def self.sync_projects
       log "🔄 Fetching Basecamp token..."
       token = Basecamp::Auth.token
@@ -31,6 +33,7 @@ module Notion
       log "  INCLUDE_ARCHIVED = #{ENV["INCLUDE_ARCHIVED"] == "true"}"
       log "  RESET = #{ENV["RESET"] == "true"}"
       log "  CACHE_ENABLED = #{CACHE_ENABLED}"
+      log "  MAX_PROJECT_THREADS = #{MAX_PROJECT_THREADS}"
 
       # ✅ Initialize progress tracker
       progress = ProgressTracker.new
@@ -60,22 +63,50 @@ module Notion
 
       log "🚀 Starting sync for #{matched_projects.size} matched project(s)..."
 
-      matched_projects.each_with_index do |proj, idx|
-        log "\n📁 === [#{idx + 1}/#{matched_projects.size}] Syncing: #{proj['name']} ==="
-        start_time = Time.now
+      # ✅ Thread pool with safe concurrency
+      semaphore = Mutex.new
+      queue = Queue.new
+      matched_projects.each_with_index { |proj, idx| queue << [proj, idx] }
 
-        begin
-          Notion::Process.process_project(proj, NOTION_ROOT_PAGE_ID, headers, progress)
-        rescue => e
-          error "❌ Error syncing project '#{proj['name']}': #{e.message}"
-          error e.backtrace.join("\n")
+      threads = Array.new(MAX_PROJECT_THREADS) do
+        Thread.new do
+          while !queue.empty? && (item = queue.pop(true) rescue nil)
+            proj, idx = item
+            next unless proj
+
+            begin
+              log "\n📁 === [#{idx + 1}/#{matched_projects.size}] Syncing: #{proj['name']} ==="
+              start_time = Time.now
+
+              Notion::Process.process_project(proj, NOTION_ROOT_PAGE_ID, headers, progress)
+
+              duration = Time.now - start_time
+              log "✅ Finished project '#{proj['name']}' in #{duration.round(2)}s"
+            rescue Interrupt
+              log "🛑 Project thread interrupted for project '#{proj['name']}'."
+              Thread.exit
+            rescue => e
+              error "❌ Error syncing project '#{proj['name']}': #{e.message}"
+              error e.backtrace.join("\n")
+              Thread.exit
+            end
+          end
         end
-
-        duration = Time.now - start_time
-        log "✅ Finished project '#{proj['name']}' in #{duration.round(2)}s"
       end
 
-      log "🎉 Sync complete!"
+      # ✅ Optionally log active thread count
+      Thread.new do
+        loop do
+          sleep 5
+          alive = threads.count(&:alive?)
+          log "🧩 Project thread pool: #{alive} threads active"
+          break if threads.all? { |t| !t.alive? }
+        end
+      end
+
+      threads.each(&:join)
+
+      log "🎉 Project-level sync complete!"
 
       # ✅ Export progress database at end
       progress.export_dump
