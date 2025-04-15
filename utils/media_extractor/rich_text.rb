@@ -1,108 +1,147 @@
 # utils/media_extractor/rich_text.rb
 
-require_relative './helpers'
-require_relative './resolver'
+require 'nokogiri'
+require_relative './notion_span'
 require_relative './logger'
 
 module Utils
   module MediaExtractor
     module RichText
-      extend ::Utils::Logging
-      extend ::Utils::MediaExtractor::Helpers
-      extend ::Utils::MediaExtractor::Resolver
+      extend self
 
-      def self.extract_rich_text_from_fragment(fragment, context, parent_page_id)
-        rich_text = []
-        embed_blocks = []
+      MAX_NOTION_TEXT_LENGTH = 2000  # any single text object must be <= 2000
 
-        fragment.each_with_index do |child, idx|
-          next if child.comment?
+      def extract_rich_text_from_fragment(fragment, context = nil)
+        return [] unless fragment
 
-          case child.name
-          when 'text', nil
-            text = child.text
-            segment = Helpers.text_segment(text)
-            rich_text << segment if segment
+        Logger.debug("[RichText] extract start => #{fragment.to_html.inspect} (#{context})")
 
-          when 'a'
-            href = Helpers.clean_url(child['href'])
-            link_text = child.text
+        # 1) Gather spans
+        spans = []
+        fragment.children.each do |node|
+          spans.concat process_node(node, {}, nil, context)
+        end
+        Logger.debug("[RichText] raw => #{spans.map(&:debug_description)} (#{context})")
 
-            # ✅ Add spacing if previous or next sibling exists
-            link_text = " #{link_text}" unless idx.zero?
-            link_text = "#{link_text} " unless idx == fragment.size - 1
+        # 2) Merge consecutive spans with same format
+        merged = merge_consecutive_spans(spans)
 
-            if href && !href.empty?
-              if Resolver.basecamp_asset_url?(href)
-                resolved_url = Resolver.resolve_basecamp_url(href, context)
-                if resolved_url
-                  if Resolver.embeddable_media_url?(resolved_url)
-                    embed_blocks << Helpers.build_embed_block(resolved_url, context)
-                  else
-                    segment = Helpers.text_segment(link_text, link: resolved_url)
-                    rich_text << segment if segment
-                  end
-                else
-                  Helpers.log_manual_upload(href, parent_page_id, context)
-                  fallback_segment = Helpers.text_segment("Basecamp asset: 🔗 #{link_text.strip}", link: href.strip)
-                  rich_text << fallback_segment if fallback_segment
-                end
+        # 3) Remove trailing newlines from the last span
+        trim_trailing_newlines(merged)
 
-              elsif Resolver.embeddable_media_url?(href)
-                embed_blocks << Helpers.build_embed_block(href, context)
-              else
-                segment = Helpers.text_segment(link_text, link: href)
-                rich_text << segment if segment
-              end
-            end
+        # 4) Chunk any span > 2000 chars into multiple spans
+        chunked = chunk_spans(merged)
 
-          when 'strong', 'b'
-            segment = Helpers.text_segment(child.text.strip)
-            if segment
-              segment[:annotations] ||= {}
-              segment[:annotations][:bold] = true
-              rich_text << segment
-            end
+        Logger.debug("[RichText] final chunked => #{chunked.map(&:debug_description)} (#{context})")
 
-          when 'em', 'i'
-            segment = Helpers.text_segment(child.text.strip)
-            if segment
-              segment[:annotations] ||= {}
-              segment[:annotations][:italic] = true
-              rich_text << segment
-            end
+        # 5) Convert each final chunked span into a Notion text object
+        chunked.map(&:to_notion_rich_text)
+      rescue => e
+        Logger.error("[RichText] error: #{e.message}\n#{e.backtrace.join("\n")}")
+        []
+      end
 
-          when 'u'
-            segment = Helpers.text_segment(child.text.strip)
-            if segment
-              segment[:annotations] ||= {}
-              segment[:annotations][:underline] = true
-              rich_text << segment
-            end
+      private
 
-          when 'strike', 's', 'del'
-            segment = Helpers.text_segment(child.text.strip)
-            if segment
-              segment[:annotations] ||= {}
-              segment[:annotations][:strikethrough] = true
-              rich_text << segment
-            end
+      def process_node(node, annotations, link, context)
+        return [] if node.comment?
 
-          when 'code'
-            segment = Helpers.text_segment(child.text.strip)
-            if segment
-              segment[:annotations] ||= {}
-              segment[:annotations][:code] = true
-              rich_text << segment
-            end
+        if node.text?
+          txt = node.text
+          return [] if txt.empty?
+
+          span = Utils::MediaExtractor::NotionSpan.new(text: txt, annotations: annotations, link: link)
+          Logger.debug("[RichText] span => #{span.debug_description} (#{context})")
+          [span]
+
+        elsif node.element?
+          if node.name == 'br'
+            return [newline_span(annotations, link, context)]
 
           else
-            segment = Helpers.text_segment(child.text.strip)
-            rich_text << segment if segment
+            new_anno = annotations.dup
+            new_link = link
+
+            case node.name
+            when 'strong', 'b'
+              new_anno[:bold] = true
+            when 'em', 'i'
+              new_anno[:italic] = true
+            when 'u'
+              new_anno[:underline] = true
+            when 's', 'strike'
+              new_anno[:strikethrough] = true
+            when 'code'
+              new_anno[:code] = true
+            when 'a'
+              new_link = node['href']
+            end
+
+            out = []
+            node.children.each do |child|
+              out.concat process_node(child, new_anno, new_link, context)
+            end
+            out
+          end
+
+        else
+          []
+        end
+      end
+
+      def newline_span(annotations, link, context)
+        span = Utils::MediaExtractor::NotionSpan.new(text: "\n", annotations: annotations, link: link)
+        Logger.debug("[RichText] produced newline => #{span.debug_description} (#{context})")
+        span
+      end
+
+      def merge_consecutive_spans(spans)
+        return [] if spans.empty?
+        merged = [spans.first]
+        spans.each_cons(2) do |(_, curr)|
+          if merged.last.merge_if_compatible!(curr)
+            # merged
+          else
+            merged << curr
           end
         end
+        merged
+      end
 
-        [rich_text.compact, embed_blocks.compact]
+      def trim_trailing_newlines(spans)
+        return if spans.empty?
+        last_span = spans[-1]
+        if last_span.content.match?(/\n+$/)
+          last_span.content = last_span.content.sub(/\n+$/, "")
+          spans.pop if last_span.content.empty?
+        end
+      end
+
+      # Splits any span whose content > 2000 chars into multiple 2000-char slices
+      # preserving the same annotations/link for each chunk.
+      def chunk_spans(spans)
+        results = []
+        spans.each do |span|
+          text = span.content
+          if text.size <= MAX_NOTION_TEXT_LENGTH
+            results << span
+          else
+            # chunk it
+            offset = 0
+            while offset < text.size
+              slice = text[offset, MAX_NOTION_TEXT_LENGTH]
+              offset += MAX_NOTION_TEXT_LENGTH
+
+              new_span = Utils::MediaExtractor::NotionSpan.new(
+                text: slice,
+                annotations: span.annotations.dup,
+                link: span.link
+              )
+              results << new_span
+            end
+          end
+        end
+        results
       end
     end
   end

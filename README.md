@@ -267,8 +267,8 @@ Debug mode:
 
 ## 📋 Roadmap (Potentially)
 
-- [ ] Bug: Due to how we recurse through HTML elements provided by Basecamp dump, in some situations we're doubling up, whole sentences can be repeated.
-- [ ] Bug: When some links/avatars or similar HTML tags are removed, we're not spacing around the text
+- [ ] Bug: Some figcaptions are doubling up, given our issues with assets I've not resolved this yet
+- [ ] Bug: Similar to above avatar link/images are duplicating and putting the name twice, likely figcaption related
 - [ ] Delta sync: sync only updated Basecamp content
 - [ ] Parallelise projects (right now we parallelise tools per project)
 - [ ] Media upload support (when Notion API allows)

@@ -5,6 +5,7 @@ require_relative './helpers'
 require_relative './logger'
 require_relative './resolver'
 require_relative './rich_text'
+require 'set'
 
 module Utils
   module MediaExtractor
@@ -20,21 +21,14 @@ module Utils
       end
 
       def self.handle_node_recursive(node, context, parent_page_id, notion_blocks, embed_blocks)
-        # ✅ Skip text nodes entirely — they are already handled in process_div_or_paragraph fragments
-        if node.text?
-          debug "🚫 [handle_node_recursive] Skipping text node: '#{node.text.strip}' (#{context})"
-          return
-        end
+        return if node.comment?
 
-        # ✅ Process div/p nodes in bulk to avoid child duplication.
         if %w[div p].include?(node.name)
-          handle_node(node, context, parent_page_id, notion_blocks, embed_blocks)
+          notion_blocks.concat process_div_or_paragraph(node, context)
           return
         end
 
-        handle_node(node, context, parent_page_id, notion_blocks, embed_blocks)
-
-        # 🚫 Do not recurse into children of these nodes
+        handle_node(node, context, notion_blocks, embed_blocks)
         return if SKIP_CHILDREN_NODES.include?(node.name)
 
         node.children.each do |child|
@@ -43,21 +37,18 @@ module Utils
         end
       end
 
-      def self.handle_node(node, context, parent_page_id, notion_blocks, embed_blocks)
-        if inside_bc_attachment?(node) && node.name != 'bc-attachment'
-          debug "🚫 [handle_node] Skipping node inside <bc-attachment>: <#{node.name}> (#{context})"
-          return
-        end
+      def self.handle_node(node, context, notion_blocks, embed_blocks)
+        return if inside_bc_attachment?(node) && node.name != 'bc-attachment'
 
         case node.name
         when 'div', 'p'
-          notion_blocks.concat process_div_or_paragraph(node, context, parent_page_id)
+          # Already handled in handle_node_recursive
         when 'br'
-          notion_blocks << Helpers.empty_paragraph_block
+          # no separate block for <br>
         when 'bc-attachment'
-          notion_blocks.concat process_bc_attachment(node, context, parent_page_id)
+          notion_blocks.concat process_bc_attachment(node, context)
         when 'ul', 'ol'
-          list_blocks, list_embeds = process_list(node, node.name == 'ul' ? 'unordered' : 'ordered', context, parent_page_id)
+          list_blocks, list_embeds = process_list(node, node.name == 'ul' ? 'unordered' : 'ordered', context)
           notion_blocks.concat(list_blocks)
           embed_blocks.concat(list_embeds)
         when 'pre'
@@ -71,196 +62,165 @@ module Utils
         when 'blockquote'
           notion_blocks.concat process_quote_block(node, context)
         when 'hr'
-          notion_blocks << process_divider_block(context)
+          notion_blocks << process_divider_block
         when 'iframe'
-          if node['src']
-            embed_blocks << Helpers.build_embed_block(node['src'], context)
-          else
-            warn "⚠️ [handle_node] iframe without src attribute (#{context})"
-          end
+          embed_blocks << Helpers.build_embed_block(node['src'], context) if node['src']
         when 'figcaption'
-          notion_blocks.concat process_figcaption(node, context)
+          notion_blocks.concat process_figcaption_dedup(node, context)
         else
-          debug "⚠️ [handle_node] Unhandled node <#{node.name}> — treating as paragraph (#{context})"
-          notion_blocks.concat process_div_or_paragraph(node, context, parent_page_id)
+          # fallback for inline tags
         end
       end
 
-      def self.process_div_or_paragraph(node, context, parent_page_id)
+      def self.process_div_or_paragraph(node, context)
         blocks = []
-        embed_blocks = []
 
-        # ✅ Collect all fragments into single rich_text array
-        full_rich_text = []
-        node.children.each do |child|
-          next if child.comment?
-
-          child_rich_text, child_embeds = ::Utils::MediaExtractor::RichText.extract_rich_text_from_fragment([child], context, parent_page_id)
-          full_rich_text.concat(child_rich_text.compact) if child_rich_text.any?
-          embed_blocks.concat(child_embeds.compact) if child_embeds.any?
+        # If the node is empty except for <br> or whitespace, create a blank paragraph block
+        if empty_or_whitespace_div?(node)
+          blocks << Helpers.empty_paragraph_block
+          return blocks
         end
 
-        # ✅ Chunk if needed (very long lines)
-        rich_text_chunks = Helpers.chunk_rich_text(full_rich_text)
-        Logger.debug_chunk_summary(rich_text_chunks, context: context, label: "Div/P Full RichText")
+        html_str = node.inner_html
+        debug "[process_div_or_paragraph] => #{html_str.inspect} (#{context})"
 
-        rich_text_chunks.each_with_index do |chunk, chunk_idx|
-          next if chunk.compact.empty?
+        parsed_fragment = Nokogiri::HTML.fragment(html_str)
+        rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(parsed_fragment, context)
+        return blocks if rich_text.empty?
 
-          block = {
-            object: "block",
-            type: "paragraph",
-            paragraph: { rich_text: chunk.compact }
-          }
-          debug "🧩 [process_div_or_paragraph] Built block chunk #{chunk_idx + 1}/#{rich_text_chunks.size} (#{context}): #{block.to_json[0..500]}"
-          blocks << block
-        end
-
-        blocks.concat(embed_blocks) if embed_blocks.any?
-        blocks
+        block = {
+          object: 'block',
+          type: 'paragraph',
+          paragraph: { rich_text: rich_text }
+        }
+        debug "[process_div_or_paragraph] built => #{block.inspect} (#{context})"
+        blocks << block
       end
 
-      def self.process_bc_attachment(node, context, parent_page_id)
-        blocks = []
+      def self.empty_or_whitespace_div?(node)
+        # If it has no real text except <br> or whitespace, treat as blank
+        # e.g. <div><br></div> or <p>&nbsp;</p>
+        content = node.inner_html.strip
+        # if content is empty or just <br> or &nbsp;
+        return true if content == '' || content.downcase == '<br>' || content.gsub('&nbsp;', '').strip == ''
+        false
+      end
 
-        basecamp_href = Helpers.clean_url(node['href'])
-        filename = (node['filename'] || basecamp_href).to_s.strip
+      def self.process_figcaption_dedup(node, context)
+        text = node.text.strip
+        return [] if text.empty?
+
+        # Check parent's text or grandparent's text for duplication
+        par_text = node.parent&.text&.strip
+        gp_text  = node.parent&.parent&.text&.strip
+
+        if [par_text, gp_text].compact.any? { |t| t == text }
+          debug "[process_figcaption_dedup] skipping figcaption (duplicate) => #{text.inspect} (#{context})"
+          return []
+        end
+
+        [{
+          object: 'block',
+          type: 'paragraph',
+          paragraph: { rich_text: [Helpers.text_segment(text)] }
+        }]
+      end
+
+      def self.process_bc_attachment(node, context)
+        blocks = []
+        href = Helpers.clean_url(node['href'])
+        filename = (node['filename'] || href).to_s.strip
         figcaption_text = node.at_css('figcaption')&.text&.strip
 
-        if basecamp_href
-          segment = Helpers.text_segment("Basecamp asset: 🔗 #{filename}", link: basecamp_href)
+        if href
           blocks << {
-            object: "block",
-            type: "paragraph",
-            paragraph: { rich_text: [segment] }
+            object: 'block',
+            type: 'paragraph',
+            paragraph: {
+              rich_text: [Helpers.text_segment("Basecamp asset: 🔗 #{filename}", link: href)]
+            }
           }
-          log "🖼️ [process_bc_attachment] Added Basecamp asset link block: #{basecamp_href} (#{context})"
-        else
-          warn "⚠️ [process_bc_attachment] bc-attachment missing href attribute (#{context})"
         end
 
         if figcaption_text && !figcaption_text.empty?
           blocks << {
-            object: "block",
-            type: "paragraph",
-            paragraph: { rich_text: [{ type: "text", text: { content: figcaption_text } }] }
+            object: 'block',
+            type: 'paragraph',
+            paragraph: {
+              rich_text: [Helpers.text_segment(figcaption_text)]
+            }
           }
-          log "🖼️ [process_bc_attachment] Added figcaption text block: #{figcaption_text} (#{context})"
         end
 
         blocks
       end
 
       def self.process_code_block(node, context)
-        code_text = node.text.strip
-        return [] if code_text.empty?
+        text = node.text.strip
+        return [] if text.empty?
 
-        chunks = Helpers.chunk_rich_text([Helpers.text_segment(code_text)].compact)
-        Logger.debug_chunk_summary(chunks, context: context, label: "Code block")
-
-        chunks.map.with_index do |chunk, idx|
+        [
           {
-            object: "block",
-            type: "code",
-            code: { rich_text: chunk.compact, language: "plain text" }
-          }.tap do |block|
-            debug "🧩 [process_code_block] Built code block chunk #{idx + 1}/#{chunks.size} (#{context}): #{block.to_json[0..500]}"
-          end
-        end
+            object: 'block',
+            type: 'code',
+            code: { rich_text: [Helpers.text_segment(text)], language: 'plain text' }
+          }
+        ]
       end
 
       def self.process_heading_block(node, context, level:)
-        heading_text = node.text.strip
-        return [] if heading_text.empty?
+        text = node.text.strip
+        return [] if text.empty?
 
-        chunks = Helpers.chunk_rich_text([Helpers.text_segment(heading_text)].compact)
-        Logger.debug_chunk_summary(chunks, context: context, label: "Heading level #{level}")
-
-        chunks.map.with_index do |chunk, idx|
+        [
           {
-            object: "block",
+            object: 'block',
             type: "heading_#{level}",
-            "heading_#{level}": { rich_text: chunk.compact }
-          }.tap do |block|
-            debug "🧩 [process_heading_block] Built heading_#{level} block chunk #{idx + 1}/#{chunks.size} (#{context}): #{block.to_json[0..500]}"
-          end
-        end
+            "heading_#{level}".to_sym => {
+              rich_text: [Helpers.text_segment(text)]
+            }
+          }
+        ]
       end
 
       def self.process_quote_block(node, context)
-        quote_text = node.text.strip
-        return [] if quote_text.empty?
+        text = node.text.strip
+        return [] if text.empty?
 
-        chunks = Helpers.chunk_rich_text([Helpers.text_segment(quote_text)].compact)
-        Logger.debug_chunk_summary(chunks, context: context, label: "Quote block")
-
-        chunks.map.with_index do |chunk, idx|
+        [
           {
-            object: "block",
-            type: "quote",
-            quote: { rich_text: chunk.compact }
-          }.tap do |block|
-            debug "🧩 [process_quote_block] Built quote block chunk #{idx + 1}/#{chunks.size} (#{context}): #{block.to_json[0..500]}"
-          end
-        end
+            object: 'block',
+            type: 'quote',
+            quote: { rich_text: [Helpers.text_segment(text)] }
+          }
+        ]
       end
 
-      def self.process_divider_block(context)
-        block = {
-          object: "block",
-          type: "divider",
-          divider: {}
-        }
-        debug "🧩 [process_divider_block] Built divider block (#{context})"
-        block
+      def self.process_divider_block
+        { object: 'block', type: 'divider', divider: {} }
       end
 
-      def self.process_figcaption(node, context)
-        caption_text = node.text.strip
-        return [] if caption_text.empty?
-
-        chunks = Helpers.chunk_rich_text([Helpers.text_segment(caption_text)].compact)
-        Logger.debug_chunk_summary(chunks, context: context, label: "Figcaption block")
-
-        chunks.map.with_index do |chunk, idx|
-          {
-            object: "block",
-            type: "paragraph",
-            paragraph: { rich_text: chunk.compact }
-          }.tap do |block|
-            debug "🧩 [process_figcaption] Built figcaption block chunk #{idx + 1}/#{chunks.size} (#{context}): #{block.to_json[0..500]}"
-          end
-        end
-      end
-
-      def self.process_list(node, list_type, context, parent_page_id)
+      def self.process_list(node, list_type, context)
         blocks = []
-        embed_blocks = []
+        embeds = []
 
-        node.css('li').each_with_index do |li, idx|
-          rich_text, li_embeds = ::Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(li.children, context, parent_page_id)
-          next if rich_text.compact.empty?
+        node.css('li').each do |li|
+          li_frag = Nokogiri::HTML.fragment(li.inner_html)
+          li_rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(li_frag, context)
+          next if li_rich_text.empty?
 
-          rich_text_chunks = Helpers.chunk_rich_text(rich_text)
-          Logger.debug_chunk_summary(rich_text_chunks, context: context, label: "List Item #{idx + 1}")
-
-          rich_text_chunks.each_with_index do |chunk, chunk_idx|
-            block = {
-              object: "block",
-              type: list_type == 'unordered' ? "bulleted_list_item" : "numbered_list_item",
-              (list_type == 'unordered' ? :bulleted_list_item : :numbered_list_item) => {
-                rich_text: chunk.compact
-              }
+          block = {
+            object: 'block',
+            type: (list_type == 'unordered' ? 'bulleted_list_item' : 'numbered_list_item'),
+            (list_type == 'unordered' ? :bulleted_list_item : :numbered_list_item) => {
+              rich_text: li_rich_text
             }
-
-            debug "🧩 [process_list] Built list block #{idx + 1}.#{chunk_idx + 1} (#{context}): #{block.to_json[0..500]}"
-            blocks << block
-          end
-
-          embed_blocks.concat(li_embeds.compact) if li_embeds.any?
+          }
+          debug "[process_list] => #{block.inspect} (#{context})"
+          blocks << block
         end
 
-        [blocks.compact, embed_blocks.compact]
+        [blocks, embeds]
       end
     end
   end
