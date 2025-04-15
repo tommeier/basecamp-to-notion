@@ -42,15 +42,25 @@ module Utils
 
         case node.name
         when 'div', 'p'
-          # Already handled in handle_node_recursive
+          # already handled by handle_node_recursive
         when 'br'
-          # no separate block for <br>
+          # no separate block
         when 'bc-attachment'
-          notion_blocks.concat process_bc_attachment(node, context)
+          if node['content-type'] == 'application/vnd.basecamp.mention'
+            # Skip here — handled inline in RichText as emoji fallback with name
+            # Notion won't allow small inline images for the avatars
+            return
+          else
+            notion_blocks.concat process_bc_attachment(node, context)
+          end
+        when 'figure'
+          notion_blocks.concat process_figure(node, context)
+        when 'figcaption'
+          notion_blocks.concat process_figcaption_dedup(node, context)
         when 'ul', 'ol'
-          list_blocks, list_embeds = process_list(node, node.name == 'ul' ? 'unordered' : 'ordered', context)
-          notion_blocks.concat(list_blocks)
-          embed_blocks.concat(list_embeds)
+          lb, eb = process_list(node, node.name == 'ul' ? 'unordered' : 'ordered', context)
+          notion_blocks.concat(lb)
+          embed_blocks.concat(eb)
         when 'pre'
           notion_blocks.concat process_code_block(node, context)
         when 'h1'
@@ -65,17 +75,12 @@ module Utils
           notion_blocks << process_divider_block
         when 'iframe'
           embed_blocks << Helpers.build_embed_block(node['src'], context) if node['src']
-        when 'figcaption'
-          notion_blocks.concat process_figcaption_dedup(node, context)
-        else
-          # fallback for inline tags
         end
       end
 
       def self.process_div_or_paragraph(node, context)
         blocks = []
 
-        # If the node is empty except for <br> or whitespace, create a blank paragraph block
         if empty_or_whitespace_div?(node)
           blocks << Helpers.empty_paragraph_block
           return blocks
@@ -98,102 +103,139 @@ module Utils
       end
 
       def self.empty_or_whitespace_div?(node)
-        # If it has no real text except <br> or whitespace, treat as blank
-        # e.g. <div><br></div> or <p>&nbsp;</p>
         content = node.inner_html.strip
-        # if content is empty or just <br> or &nbsp;
-        return true if content == '' || content.downcase == '<br>' || content.gsub('&nbsp;', '').strip == ''
-        false
+        content.empty? || content.downcase == '<br>' || content.gsub('&nbsp;', '').strip.empty?
+      end
+
+      def self.process_bc_attachment(node, context)
+        blocks = []
+        raw_url = node['url'] || node['href'] || node['src']
+        resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
+        return blocks unless resolved_url
+
+        caption = node.at_css('figcaption')&.text&.strip || node['caption']
+        caption = caption.gsub(/\s+/, ' ') if caption
+
+        if Resolver.basecamp_asset_url?(resolved_url)
+          lines = ["Basecamp asset: 🔗 #{resolved_url}"]
+          lines << "Caption: #{caption}" if caption && !caption.empty?
+          spans = lines.flat_map.with_index do |line, idx|
+            [Helpers.text_segment(line)] + (idx < lines.size - 1 ? [Helpers.text_segment("\n")] : [])
+          end
+
+          blocks << {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: { rich_text: spans }
+          }
+        else
+          blocks << Helpers.build_embed_block(resolved_url, context)
+          if caption && !caption.empty?
+            blocks << {
+              object: 'block',
+              type: 'paragraph',
+              paragraph: {
+                rich_text: [Helpers.text_segment("Caption: #{caption}")]
+              }
+            }
+          end
+        end
+
+        blocks
+      end
+
+      def self.process_figure(node, context)
+        blocks = []
+        img = node.at_css('img')
+        raw_url = img&.[]('src')&.strip
+        resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
+        return blocks unless resolved_url
+
+        caption = node.at_css('figcaption')&.text&.strip&.gsub(/\s+/, ' ')
+
+        if Resolver.basecamp_asset_url?(resolved_url)
+          lines = ["Basecamp asset: 🔗 #{resolved_url}"]
+          lines << "Caption: #{caption}" if caption && !caption.empty?
+          spans = lines.flat_map.with_index do |line, idx|
+            [Helpers.text_segment(line)] + (idx < lines.size - 1 ? [Helpers.text_segment("\n")] : [])
+          end
+
+          blocks << {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: { rich_text: spans }
+          }
+        else
+          blocks << Helpers.build_embed_block(resolved_url, context)
+          if caption && !caption.empty?
+            blocks << {
+              object: 'block',
+              type: 'paragraph',
+              paragraph: {
+                rich_text: [Helpers.text_segment("Caption: #{caption}")]
+              }
+            }
+          end
+        end
+
+        blocks
       end
 
       def self.process_figcaption_dedup(node, context)
-        text = node.text.strip
-        return [] if text.empty?
+        txt = node.text.strip.gsub(/\s+/, ' ')
+        return [] if txt.empty?
 
-        # Check parent's text or grandparent's text for duplication
-        par_text = node.parent&.text&.strip
-        gp_text  = node.parent&.parent&.text&.strip
+        parent_text = node.parent&.text&.strip&.gsub(/\s+/, ' ')
+        gp_text = node.parent&.parent&.text&.strip&.gsub(/\s+/, ' ')
 
-        if [par_text, gp_text].compact.any? { |t| t == text }
-          debug "[process_figcaption_dedup] skipping figcaption (duplicate) => #{text.inspect} (#{context})"
+        if [parent_text, gp_text].compact.any? { |t| t == txt }
+          debug "[process_figcaption_dedup] skipping duplicate figcaption => #{txt.inspect} (#{context})"
           return []
         end
 
         [{
           object: 'block',
           type: 'paragraph',
-          paragraph: { rich_text: [Helpers.text_segment(text)] }
+          paragraph: { rich_text: [Helpers.text_segment("Caption: #{txt}")] }
         }]
       end
 
-      def self.process_bc_attachment(node, context)
-        blocks = []
-        href = Helpers.clean_url(node['href'])
-        filename = (node['filename'] || href).to_s.strip
-        figcaption_text = node.at_css('figcaption')&.text&.strip
-
-        if href
-          blocks << {
-            object: 'block',
-            type: 'paragraph',
-            paragraph: {
-              rich_text: [Helpers.text_segment("Basecamp asset: 🔗 #{filename}", link: href)]
-            }
-          }
-        end
-
-        if figcaption_text && !figcaption_text.empty?
-          blocks << {
-            object: 'block',
-            type: 'paragraph',
-            paragraph: {
-              rich_text: [Helpers.text_segment(figcaption_text)]
-            }
-          }
-        end
-
-        blocks
-      end
-
       def self.process_code_block(node, context)
-        text = node.text.strip
-        return [] if text.empty?
+        text = node.text
+        return [] if text.strip.empty?
 
-        [
-          {
-            object: 'block',
-            type: 'code',
-            code: { rich_text: [Helpers.text_segment(text)], language: 'plain text' }
+        [{
+          object: 'block',
+          type: 'code',
+          code: {
+            rich_text: [Helpers.text_segment(text)],
+            language: 'plain text'
           }
-        ]
+        }]
       end
 
       def self.process_heading_block(node, context, level:)
         text = node.text.strip
         return [] if text.empty?
 
-        [
-          {
-            object: 'block',
-            type: "heading_#{level}",
-            "heading_#{level}".to_sym => {
-              rich_text: [Helpers.text_segment(text)]
-            }
+        [{
+          object: 'block',
+          type: "heading_#{level}",
+          "heading_#{level}".to_sym => {
+            rich_text: [Helpers.text_segment(text)]
           }
-        ]
+        }]
       end
 
       def self.process_quote_block(node, context)
         text = node.text.strip
         return [] if text.empty?
 
-        [
-          {
-            object: 'block',
-            type: 'quote',
-            quote: { rich_text: [Helpers.text_segment(text)] }
-          }
-        ]
+        [{
+          object: 'block',
+          type: 'quote',
+          quote: { rich_text: [Helpers.text_segment(text)] }
+        }]
       end
 
       def self.process_divider_block

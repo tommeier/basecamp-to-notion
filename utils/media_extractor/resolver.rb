@@ -14,6 +14,10 @@ module Utils
 
       def self.resolve_basecamp_url(url, context = nil)
         return @resolved_url_cache[url] if @resolved_url_cache.key?(url)
+        unless url.is_a?(String) && url.strip.match?(URI::DEFAULT_PARSER.make_regexp)
+          error "❌ [resolve_basecamp_url] Invalid input, not a URL: #{url.inspect} (#{context})"
+          return nil
+        end
 
         original_url = extract_original_url_from_basecamp_proxy(url)
         if original_url
@@ -37,12 +41,17 @@ module Utils
       end
 
       def self.extract_original_url_from_basecamp_proxy(basecamp_url)
+        return unless basecamp_url.is_a?(String) && basecamp_url.strip != ""
+
         uri = URI(basecamp_url)
         return unless uri.query
 
         params = URI.decode_www_form(uri.query).to_h
         original_url = params['u'] || params['url']
         original_url if original_url&.match?(URI.regexp(%w[http https]))
+      rescue URI::InvalidURIError => e
+        error "❌ [extract_original_url_from_basecamp_proxy] Invalid URI: #{basecamp_url.inspect} — #{e.message}"
+        nil
       end
 
       def self.embeddable_media_url?(url)
