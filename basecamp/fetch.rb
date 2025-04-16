@@ -76,7 +76,7 @@ module Basecamp
     def self.write_debug_file(uri, json_data)
       FileUtils.mkdir_p("./tmp")
       file_safe_uri = uri.to_s.gsub(%r{[^0-9A-Za-z.\-]}, "_")
-      file_path = "./tmp/basecamp_api_payload_#{file_safe_uri}.json"
+      file_path = "./tmp/basecamp_payloads/basecamp_api_payload_#{file_safe_uri}.json"
       File.open(file_path, "w") { |f| f.write(json_data) }
       log "📝 Basecamp API payload written to: #{file_path}"
     end
