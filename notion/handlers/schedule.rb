@@ -12,7 +12,6 @@ module Notion
       extend ::Utils::Logging
 
       MAX_EVENTS_PER_PAGE = 100
-      MAX_CHILDREN_PER_BLOCK = 50
 
       def self.call(project, tool, parent_page_id, headers, progress)
         log "🔧 Handling schedule tool: #{tool['title']}"
