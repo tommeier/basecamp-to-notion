@@ -22,11 +22,10 @@ module Notion
       debug "🧩 [text_block] MediaExtractor returned #{total_blocks} blocks (text: #{blocks.size}, embeds: #{embed_blocks.size}) for context: #{context}"
       debug_block_previews(blocks + embed_blocks, context: context, label: 'text_block')
 
-      # ✅ Safe return
       (blocks + embed_blocks).compact
     end
 
-    # ✅ Heading block helper (H1–H3)
+    # ✅ Heading block helper
     def self.heading_block(text, level = 2, context = nil)
       blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
         text,
@@ -96,21 +95,31 @@ module Notion
         type: "paragraph",
         paragraph: {
           rich_text: [
-            { type: "text", text: { content: label.to_s.strip + " " } },
+            { type: "text", text: { content: "#{label.to_s.strip} " } },
             { type: "text", text: { content: url.to_s.strip, link: { url: url.to_s.strip } } }
           ]
         }
       }
     end
 
+    # ✅ PDF embed block
+    def self.pdf_file_block(url, context)
+      {
+        object: 'block',
+        type: 'file',
+        file: {
+          type: 'external',
+          external: { url: url }
+        }
+      }.tap do |block|
+        debug "[pdf_file_block] => #{block.inspect} (#{context})"
+      end
+    end
+
     # ✅ Divider block
     def self.divider_block
       debug "🧩 [divider_block] Creating divider block"
-      {
-        object: "block",
-        type: "divider",
-        divider: {}
-      }
+      { object: "block", type: "divider", divider: {} }
     end
 
     # ✅ Index link block
@@ -148,13 +157,13 @@ module Notion
       ].flatten.compact
     end
 
-    # ✅ Comment author metadata block
+    # ✅ Comment author callout
     def self.comment_author_block(author_name, created_at, context = nil)
       debug "🧩 [comment_author_block] Building comment author block for #{author_name} at #{created_at} (#{context})"
       callout_block("👤 #{author_name} · 🕗 #{created_at}", "💬", context).compact
     end
 
-    # ✅ Wrap blocks in callout
+    # ✅ Callout wrapper
     def self.wrap_in_callout(blocks, text = "Additional context", emoji = "💬")
       compacted_blocks = deep_compact_blocks(blocks)
       return compacted_blocks if compacted_blocks.empty?
@@ -177,20 +186,53 @@ module Notion
       ].flatten.compact
     end
 
-    # ✅ Utility: debug block previews
+    def self.basecamp_asset_fallback_blocks(url, caption, context)
+      debug "📎 [basecamp_asset_fallback_blocks] Creating fallback callout for #{url} (#{context})"
+
+      cleaned = url.to_s.strip
+      # if cleaned is empty => can't link
+      link_obj = cleaned.empty? ? nil : { url: cleaned }
+
+      main_richtext = []
+      main_richtext << {
+        type: 'text',
+        text: {
+          content: 'Basecamp asset',
+          link: link_obj
+        }
+      }
+      if caption && !caption.empty?
+        main_richtext << {
+          type: 'text',
+          text: { content: " – #{caption}" }
+        }
+      end
+
+      [
+        {
+          object: 'block',
+          type: 'callout',
+          callout: {
+            icon: { type: 'emoji', emoji: '🔗' },
+            rich_text: main_richtext,
+            color: 'yellow_background'
+          }
+        }
+      ]
+    end
+
+    # ✅ Utility: debug preview
     def self.debug_block_previews(blocks, context:, label:)
       return if blocks.empty?
-
       debug "🧩 [#{label}] Previewing first #{[blocks.size, 5].min} blocks (#{context}):"
       blocks.first(5).each_with_index do |block, idx|
         debug "    [#{label} block #{idx}] #{block.to_json[0..500]}"
       end
     end
 
-    # ✅ Utility: debug rich_text previews
+    # ✅ Utility: rich_text preview
     def self.debug_rich_text_preview(rich_text_array, context:, label:)
       return if rich_text_array.empty?
-
       debug "🧩 [#{label}] RichText preview (#{context}): total #{rich_text_array.size} items"
       rich_text_array.each_with_index do |text, idx|
         preview = text.dig(:text, :content).to_s[0..60]
@@ -198,7 +240,7 @@ module Notion
       end
     end
 
-    # ✅ Utility: deep compact blocks
+    # ✅ Utility: compact block filter
     def self.deep_compact_blocks(blocks)
       (blocks || []).compact.reject { |block| block.nil? || block == {} }
     end
