@@ -13,6 +13,8 @@ module Basecamp
   module Fetch
     extend ::Utils::Logging
 
+    PAYLOAD_LOG_DIR = "./tmp/basecamp_payloads"
+
     def self.load_json(uri, headers = {})
       debug("🌐 GET #{uri}")
       all_data = []
@@ -74,9 +76,10 @@ module Basecamp
     end
 
     def self.write_debug_file(uri, json_data)
-      FileUtils.mkdir_p("./tmp")
+      FileUtils.mkdir_p(PAYLOAD_LOG_DIR)
+
       file_safe_uri = uri.to_s.gsub(%r{[^0-9A-Za-z.\-]}, "_")
-      file_path = "./tmp/basecamp_payloads/basecamp_api_payload_#{file_safe_uri}.json"
+      file_path = File.join(PAYLOAD_LOG_DIR, "basecamp_api_payload_#{file_safe_uri}.json")
       File.open(file_path, "w") { |f| f.write(json_data) }
       log "📝 Basecamp API payload written to: #{file_path}"
     end

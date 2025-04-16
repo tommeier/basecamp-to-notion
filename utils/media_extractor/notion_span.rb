@@ -3,8 +3,8 @@
 module Utils
   module MediaExtractor
     class NotionSpan
-      attr_accessor :content
-      attr_reader :annotations, :link
+      attr_accessor :content, :link
+      attr_reader :annotations
 
       def initialize(text:, annotations: {}, link: nil)
         @content     = text.to_s
@@ -31,12 +31,11 @@ module Utils
       end
 
       def to_notion_rich_text
+        text_hash = { content: content }
+        text_hash[:link] = { url: link } if link && !link.strip.empty?
         {
           type: 'text',
-          text: {
-            content: content,
-            link: link ? { url: link } : nil
-          }.compact,
+          text: text_hash,
           annotations: annotations.empty? ? {} : annotations
         }
       end

@@ -25,6 +25,9 @@ module Utils
 
         merged = merge_consecutive_spans(spans)
         trim_trailing_newlines(merged)
+
+        sanitize_links!(merged, context)
+
         chunked = chunk_spans(merged)
 
         Logger.debug("[RichText] final chunked => #{chunked.map(&:debug_description)} (#{context})")
@@ -34,6 +37,7 @@ module Utils
         Logger.error("[RichText] error: #{e.message}\n#{e.backtrace.join("\n")}")
         []
       end
+
 
       # ✅ Safely handle plain string (e.g., for <pre>, headings, quotes)
       def extract_rich_text_from_string(str, context = nil)
@@ -124,6 +128,23 @@ module Utils
           end
         end
       end
+
+      def sanitize_links!(spans, context)
+        spans.each do |span|
+          next unless span.link.is_a?(String)
+
+          uri = URI.parse(span.link) rescue nil
+          unless uri&.scheme&.match?(/^https?$/)
+            Logger.warn("⚠️ Removing or fixing invalid URL in span: #{span.link.inspect} (#{context})")
+            if span.link.start_with?("www.")
+              span.link = "https://#{span.link}"
+            else
+              span.link = nil
+            end
+          end
+        end
+      end
+
     end
   end
 end
