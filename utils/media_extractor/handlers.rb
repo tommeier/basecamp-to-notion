@@ -20,9 +20,6 @@ module Utils
         node.ancestors.any? { |ancestor| ancestor.name == 'bc-attachment' }
       end
 
-      # -------------------------------------------------------
-      # Recursively handle
-      # -------------------------------------------------------
       def self.handle_node_recursive(node, context, parent_page_id, notion_blocks, embed_blocks)
         return if node.comment?
 
@@ -45,9 +42,6 @@ module Utils
         end
       end
 
-      # -------------------------------------------------------
-      # Switch on node type
-      # -------------------------------------------------------
       def self.handle_node(node, context, notion_blocks, embed_blocks)
         return if inside_bc_attachment?(node) && node.name != 'bc-attachment'
 
@@ -57,46 +51,66 @@ module Utils
         when 'br'
           # => skip
         when 'bc-attachment'
-          if node['content-type'] == 'application/vnd.basecamp.mention'
-            # Skip here — handled inline in RichText as emoji fallback with name
-            # Notion won't allow small inline images for the avatars
-            return
-          else
-            notion_blocks.concat process_bc_attachment(node, context)
-          end
+          # Skip here — handled inline in RichText as emoji fallback with name
+          # Notion won't allow small inline images for the avatars
+          return if node['content-type'] == 'application/vnd.basecamp.mention'
+
+          blocks = process_bc_attachment(node, context)
+          validate_blocks!(blocks, 'process_bc_attachment', node, context)
+          notion_blocks.concat(blocks)
         when 'figure'
-          notion_blocks.concat process_figure(node, context)
+          blocks = process_figure(node, context)
+          validate_blocks!(blocks, 'process_figure', node, context)
+          notion_blocks.concat(blocks)
         when 'figcaption'
           debug "[handle_node] forcibly skipping <figcaption> (#{context})"
         when 'ul', 'ol'
           list_blocks, list_embeds = process_list(node, node.name == 'ul' ? 'unordered' : 'ordered', context)
+          validate_blocks!(list_blocks, 'process_list', node, context)
           notion_blocks.concat(list_blocks)
           embed_blocks.concat(list_embeds)
         when 'pre'
-          notion_blocks.concat process_code_block(node, context)
+          blocks = process_code_block(node, context)
+          validate_blocks!(blocks, 'process_code_block', node, context)
+          notion_blocks.concat(blocks)
         when 'h1'
-          notion_blocks.concat process_heading_block(node, context, level: 1)
+          blocks = process_heading_blocks(node, context, level: 1)
+          validate_blocks!(blocks, 'process_heading_blocks h1', node, context)
+          notion_blocks.concat(blocks)
         when 'h2'
-          notion_blocks.concat process_heading_block(node, context, level: 2)
+          blocks = process_heading_blocks(node, context, level: 2)
+          validate_blocks!(blocks, 'process_heading_blocks h2', node, context)
+          notion_blocks.concat(blocks)
         when 'h3'
-          notion_blocks.concat process_heading_block(node, context, level: 3)
+          blocks = process_heading_blocks(node, context, level: 3)
+          validate_blocks!(blocks, 'process_heading_blocks h3', node, context)
+          notion_blocks.concat(blocks)
         when 'blockquote'
-          notion_blocks.concat process_quote_block(node, context)
+          blocks = process_quote_block(node, context)
+          validate_blocks!(blocks, 'process_quote_block', node, context)
+          notion_blocks.concat(blocks)
         when 'hr'
-          notion_blocks << process_divider_block
+          notion_blocks << Helpers.divider_block
         when 'iframe'
           embed_blocks << Helpers.build_embed_block(node['src'], context) if node['src']
+        else
+          debug "[handle_node] Unhandled node type: #{node.name} (#{context})"
         end
       end
 
-      # -------------------------------------------------------
-      # <div> or <p>
-      # -------------------------------------------------------
+      def self.validate_blocks!(blocks, origin, node, context)
+        # Unomment this for deep validation of blocks in case of errors
+        # unless blocks.is_a?(Array) && blocks.all? { |b| b.is_a?(Hash) && b[:object] == 'block' }
+        #   warn "❌ [#{origin}] produced invalid block(s): #{blocks.inspect}"
+        #   warn "🧩 From node: #{node.to_html.strip} (#{context})"
+        #   raise "Invalid block from #{origin}"
+        # end
+      end
+
       def self.process_div_or_paragraph(node, context)
         blocks = []
-
         if empty_or_whitespace_div?(node)
-          blocks << Helpers.empty_paragraph_block
+          blocks << Notion::Helpers.empty_paragraph_block
           return blocks
         end
 
@@ -119,7 +133,6 @@ module Utils
         }
         debug "[process_div_or_paragraph] built => #{block.inspect} (#{context})"
         blocks << block
-
         blocks
       end
 
@@ -132,17 +145,15 @@ module Utils
 
       def self._process_bc_attachment_or_figure(node, raw_url, context)
         return [] if raw_url.nil? || raw_url.empty?
-
         blocks = []
 
-        # remove figcaption from DOM
+        # remove figcaption from DOM (removes duplicates on traaversal)
         caption_node = node.at_css('figcaption')
         caption = caption_node&.text&.strip
         caption_node&.remove
 
         # remove leftover text nodes
         node.xpath('text()').each { |txt| txt.remove if txt.text.strip.empty? }
-
         resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
 
         if !resolved_url || Resolver.basecamp_asset_url?(resolved_url)
@@ -150,113 +161,61 @@ module Utils
         elsif resolved_url.end_with?('.pdf')
           return [Helpers.pdf_file_block(resolved_url, context)]
         elsif Resolver.embeddable_media_url?(resolved_url)
-          # => e.g. giphy => embed as image
-          blocks << ::Notion::Helpers.image_block(resolved_url, caption).first
-          blocks << ::Notion::Helpers.text_block("Caption: #{caption}", context).first if caption && !caption.empty?
+          blocks << ::Notion::Helpers.image_block(resolved_url, caption)
+          blocks += ::Notion::Helpers.text_blocks("Caption: #{caption}", context) if caption && !caption.empty?
         else
           blocks << Helpers.build_embed_block(resolved_url, context)
-          blocks << ::Notion::Helpers.text_block("Caption: #{caption}", context).first if caption && !caption.empty?
+          blocks += ::Notion::Helpers.text_blocks("Caption: #{caption}", context) if caption && !caption.empty?
         end
-
         blocks.compact
       end
 
-      # -------------------------------------------------------
-      # bc-attachment
-      # -------------------------------------------------------
       def self.process_bc_attachment(node, context)
         # if there's a figure inside => process_figure
         return process_figure(node, context) if node.at_css('figure')
 
         raw_url = (node['url'] || node['href'] || node['src'])&.strip
-
         _process_bc_attachment_or_figure(node, raw_url, context)
       end
 
-      # -------------------------------------------------------
-      # figure
-      # -------------------------------------------------------
       def self.process_figure(node, context)
         img = node.at_css('img')
         raw_url = img&.[]('src')&.strip
-
         _process_bc_attachment_or_figure(node, raw_url, context)
       end
 
-      # -------------------------------------------------------
-      # code block
-      # -------------------------------------------------------
       def self.process_code_block(node, context)
         text = node.text.strip
         return [] if text.empty?
-
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
         return [] if rich_text.empty?
-
-        [{
-          object: 'block',
-          type: 'code',
-          code: {
-            rich_text: rich_text,
-            language: 'plain text'
-          }
-        }]
+        [{ object: 'block', type: 'code', code: { rich_text: rich_text, language: 'plain text' } }]
       end
 
-      # -------------------------------------------------------
-      # headings
-      # -------------------------------------------------------
-      def self.process_heading_block(node, context, level:)
+      def self.process_heading_blocks(node, context, level:)
         text = node.text.strip
         return [] if text.empty?
-
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
         return [] if rich_text.empty?
-
-        [{
-          object: 'block',
-          type: "heading_#{level}",
-          "heading_#{level}".to_sym => { rich_text: rich_text }
-        }]
+        [{ object: 'block', type: "heading_#{level}", "heading_#{level}".to_sym => { rich_text: rich_text } }]
       end
 
-      # -------------------------------------------------------
-      # quote
-      # -------------------------------------------------------
       def self.process_quote_block(node, context)
         text = node.text.strip
         return [] if text.empty?
-
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
         return [] if rich_text.empty?
-
-        [{
-          object: 'block',
-          type: 'quote',
-          quote: { rich_text: rich_text }
-        }]
+        [{ object: 'block', type: 'quote', quote: { rich_text: rich_text } }]
       end
 
-      # -------------------------------------------------------
-      # hr => divider
-      # -------------------------------------------------------
-      def self.process_divider_block
-        { object: 'block', type: 'divider', divider: {} }
-      end
-
-      # -------------------------------------------------------
-      # UL / OL => lists
-      # -------------------------------------------------------
       def self.process_list(node, list_type, context)
         blocks = []
         embeds = []
-
         node.css('li').each do |li|
           li_html = li.inner_html.strip
           li_frag = Nokogiri::HTML.fragment(li_html)
           li_rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(li_frag, context)
           next if li_rich_text.empty?
-
           block = {
             object: 'block',
             type: (list_type == 'unordered' ? 'bulleted_list_item' : 'numbered_list_item'),
@@ -266,7 +225,6 @@ module Utils
           }
           blocks << block
         end
-
         [blocks, embeds]
       end
     end
