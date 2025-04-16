@@ -163,11 +163,13 @@ module Notion
 
       if index_items.any?
         index_blocks = [
-          Notion::Helpers.heading_block("🗂️ Index", 2, "Index"),
+          *Notion::Helpers.heading_blocks("🗂️ Index", 2, "Index"),
           Notion::Helpers.divider_block,
-          Notion::Helpers.callout_block("Quick Links to Tools", "🚀", "Index"),
+          *Notion::Helpers.callout_blocks("Quick Links to Tools", "🚀", "Index"),
+          Notion::Helpers.divider_block,
+          *index_items,
           Notion::Helpers.divider_block
-        ] + index_items + [Notion::Helpers.divider_block]
+        ]
 
         Notion::Blocks.append(project_page_id, index_blocks, context: "Index Page")
       else
