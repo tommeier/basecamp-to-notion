@@ -78,18 +78,18 @@ module Notion
             item_blocks = []
 
             # 🔥 Title heading
-            item_blocks += Notion::Helpers.heading_block("📅 #{entry["summary"]}", 3, context)
+            item_blocks += Notion::Helpers.heading_blocks("📅 #{entry["summary"]}", 3, context)
 
             # 🧩 Metadata callout: Creator + Time
             creator_name = entry.dig("creator", "name") || "Unknown"
             created_at = Notion::Utils.format_timestamp(entry["created_at"]) rescue "Unknown date"
-            item_blocks += Notion::Helpers.callout_block("👤 Created by #{creator_name} · 🕗 #{created_at}", "🗓️", context)
+            item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "🗓️", context)
 
             # 🕒 Event timing
             if entry["starts_at"]
               starts_at = Notion::Utils.format_timestamp(entry["starts_at"]) rescue "Unknown start"
               ends_at = entry["ends_at"] ? Notion::Utils.format_timestamp(entry["ends_at"]) : "Unknown end"
-              item_blocks += Notion::Helpers.callout_block("🕒 #{starts_at} → #{ends_at}", "📅", context)
+              item_blocks += Notion::Helpers.callout_blocks("🕒 #{starts_at} → #{ends_at}", "📅", context)
             end
 
             # 📝 Description
@@ -116,7 +116,7 @@ module Notion
               comment_blocks = fetch_and_build_comments(entry, page_id, headers, context)
 
               if comment_blocks.any?
-                blocks += Notion::Helpers.comment_section_block(comment_blocks, context)
+                blocks += Notion::Helpers.comment_section_blocks(comment_blocks, context)
               else
                 log "💬 No comment blocks built for schedule entry: #{entry["summary"]} (#{context})"
               end
@@ -153,8 +153,8 @@ module Notion
           author_name = comment.dig("creator", "name") || "Unknown commenter"
           created_at = Notion::Utils.format_timestamp(comment["created_at"]) rescue "Unknown date"
 
-          comment_blocks += Notion::Helpers.callout_block("👤 #{author_name} · 🕗 #{created_at}", "💬", comment_context)
-          comment_blocks << Notion::Helpers.text_block(" ", comment_context).first
+          comment_blocks += Notion::Helpers.callout_blocks("👤 #{author_name} · 🕗 #{created_at}", "💬", comment_context)
+          comment_blocks << Notion::Helpers.empty_paragraph_block
 
           body_blocks, _files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
             comment["content"],

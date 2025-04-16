@@ -35,7 +35,7 @@ module Notion
           )
 
           # ✅ Forward subject as heading
-          blocks += Notion::Helpers.heading_block("📥 #{forward["subject"]}", 3, context)
+          blocks += Notion::Helpers.heading_blocks("📥 #{forward["subject"]}", 3, context)
 
           # ✅ Forward body (description)
           if forward["description"] && !forward["description"].strip.empty?

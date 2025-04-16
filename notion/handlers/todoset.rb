@@ -98,7 +98,7 @@ module Notion
               if todo["creator"]
                 creator_name = todo["creator"]["name"] || "Unknown"
                 created_at = Notion::Utils.format_timestamp(todo["created_at"]) rescue "Unknown date"
-                item_blocks += Notion::Helpers.callout_block("👤 Created by #{creator_name} · 🕗 #{created_at}", "📝", context)
+                item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "📝", context)
               end
 
               # ✅ Description

@@ -32,10 +32,10 @@ module Notion
           item_blocks = []
 
           # ✅ Column title
-          item_blocks += Notion::Helpers.heading_block("🗂️ #{column["name"]}", 3, context)
+          item_blocks += Notion::Helpers.heading_blocks("🗂️ #{column["name"]}", 3, context)
 
           if column["cards_count"] == 0
-            item_blocks += Notion::Helpers.text_block("📭 No cards in this column", context)
+            item_blocks += Notion::Helpers.text_blocks("📭 No cards in this column", context)
             blocks += item_blocks
             next
           end
@@ -44,7 +44,7 @@ module Notion
           cards = Basecamp::Fetch.load_json(URI(cards_url), headers)
 
           if cards.empty?
-            item_blocks += Notion::Helpers.text_block("📭 No cards found in column", context)
+            item_blocks += Notion::Helpers.text_blocks("📭 No cards found in column", context)
             blocks += item_blocks
             next
           end
@@ -66,13 +66,13 @@ module Notion
             card_blocks = []
 
             # ✅ Card title
-            card_blocks += Notion::Helpers.callout_block(card["title"], "🗂️", card_context)
+            card_blocks += Notion::Helpers.callout_blocks(card["title"], "🗂️", card_context)
 
             # ✅ Creator metadata
             if card["creator"]
               creator_name = card["creator"]["name"] || "Unknown"
               created_at = Notion::Utils.format_timestamp(card["created_at"]) rescue "Unknown date"
-              card_blocks += Notion::Helpers.callout_block("👤 Created by #{creator_name} · 🕗 #{created_at}", "🖊️", card_context)
+              card_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "🖊️", card_context)
             end
 
             # ✅ Card description

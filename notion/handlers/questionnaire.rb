@@ -39,13 +39,13 @@ module Notion
           item_blocks = []
 
           # ✅ Question title
-          item_blocks += Notion::Helpers.heading_block("❓ #{question["subject"]}", 3, context)
+          item_blocks += Notion::Helpers.heading_blocks("❓ #{question["subject"]}", 3, context)
 
           # ✅ Creator metadata
           if question["creator"]
             creator_name = question["creator"]["name"] || "Unknown"
             created_at = Notion::Utils.format_timestamp(question["created_at"]) rescue "Unknown date"
-            item_blocks += Notion::Helpers.callout_block("👤 Created by #{creator_name} · 🕗 #{created_at}", "📝", context)
+            item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "📝", context)
           end
 
           # ✅ Description

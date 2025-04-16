@@ -122,7 +122,7 @@ module Notion
           created_at = line["created_at"] ? Notion::Utils.format_timestamp(line["created_at"]) : "Unknown date"
           author_line = "#{author} (#{created_at}):"
 
-          line_blocks += Notion::Helpers.callout_block(author_line, "💬", context)
+          line_blocks += Notion::Helpers.callout_blocks(author_line, "💬", context)
 
           # 📝 Content blocks — centralized extractor ✅
           content_blocks, embed_blocks = Notion::Blocks.extract_blocks(line["content"], page_id, context)

@@ -78,12 +78,12 @@ module Notion
             item_blocks = []
 
             # 📄 Title
-            item_blocks += Notion::Helpers.heading_block("📄 #{doc["title"]}", 3, context)
+            item_blocks += Notion::Helpers.heading_blocks("📄 #{doc["title"]}", 3, context)
 
             # 👤 Creator metadata
             creator_name = doc.dig("creator", "name") || "Unknown"
             created_at = Notion::Utils.format_timestamp(doc["created_at"]) rescue "Unknown date"
-            item_blocks += Notion::Helpers.callout_block("👤 Created by #{creator_name} · 🕗 #{created_at}", "📄", context)
+            item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "📄", context)
 
             # 🔗 App URL
             item_blocks << Notion::Helpers.label_and_link_block("🔗", doc["app_url"], context) if doc["app_url"]
@@ -105,7 +105,7 @@ module Notion
               comment_blocks = fetch_and_build_comments(doc, page_id, headers, context)
 
               if comment_blocks.any?
-                blocks += Notion::Helpers.comment_section_block(comment_blocks, context)
+                blocks += Notion::Helpers.comment_section_blocks(comment_blocks, context)
               else
                 log "💬 No comment blocks built for vault document: #{doc["title"]} (#{context})"
               end
@@ -142,8 +142,8 @@ module Notion
           author_name = comment.dig("creator", "name") || "Unknown commenter"
           created_at = Notion::Utils.format_timestamp(comment["created_at"]) rescue "Unknown date"
 
-          comment_blocks += Notion::Helpers.callout_block("👤 #{author_name} · 🕗 #{created_at}", "💬", comment_context)
-          comment_blocks << Notion::Helpers.text_block(" ", comment_context).first
+          comment_blocks += Notion::Helpers.callout_blocks("👤 #{author_name} · 🕗 #{created_at}", "💬", comment_context)
+          comment_blocks << Notion::Helpers.empty_paragraph_block
 
           body_blocks, _files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
             comment["content"],
