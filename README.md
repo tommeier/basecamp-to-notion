@@ -267,7 +267,6 @@ Debug mode:
 
 ## 📋 Roadmap (Potentially)
 
-- [ ] Bug: Some figcaptions are doubling up, given our issues with assets I've not resolved this yet
 - [ ] Delta sync: sync only updated Basecamp content
 - [ ] Parallelise projects (right now we parallelise tools per project)
 - [ ] Media upload support (when Notion API allows)
