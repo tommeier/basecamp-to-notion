@@ -3,6 +3,7 @@
 require 'nokogiri'
 require_relative './notion_span'
 require_relative './logger'
+require 'cgi'
 
 module Utils
   module MediaExtractor
@@ -34,18 +35,22 @@ module Utils
         []
       end
 
+      # ✅ Safely handle plain string (e.g., for <pre>, headings, quotes)
+      def extract_rich_text_from_string(str, context = nil)
+        return [] if str.nil? || str.empty?
+        safe_html = "<div>#{CGI.escapeHTML(str)}</div>"
+        fragment = Nokogiri::HTML.fragment(safe_html)
+        extract_rich_text_from_fragment(fragment, context)
+      end
+
       private
 
       def process_node(node, annotations, link, context)
         return [] if node.comment?
 
         if node.text?
-          txt = node.text
-          return [] if txt.empty?
-
-          span = NotionSpan.new(text: txt, annotations: annotations, link: link)
-          Logger.debug("[RichText] span => #{span.debug_description} (#{context})")
-          [span]
+          return [] if node.text.strip.empty?
+          return [NotionSpan.new(text: node.text, annotations: annotations, link: link)]
 
         elsif node.element?
           return [newline_span(annotations, link, context)] if node.name == 'br'
@@ -58,25 +63,18 @@ module Utils
           new_link = link
 
           case node.name
-          when 'strong', 'b'
-            new_anno[:bold] = true
-          when 'em', 'i'
-            new_anno[:italic] = true
-          when 'u'
-            new_anno[:underline] = true
-          when 's', 'strike'
-            new_anno[:strikethrough] = true
-          when 'code'
-            new_anno[:code] = true
+          when 'strong', 'b' then new_anno[:bold] = true
+          when 'em', 'i'     then new_anno[:italic] = true
+          when 'u'           then new_anno[:underline] = true
+          when 's', 'strike' then new_anno[:strikethrough] = true
+          when 'code'        then new_anno[:code] = true
           when 'a'
             href = node['href']
             new_link = href if href&.strip&.match?(URI::DEFAULT_PARSER.make_regexp)
           end
 
           out = []
-          node.children.each do |child|
-            out.concat process_node(child, new_anno, new_link, context)
-          end
+          node.children.each { |child| out.concat process_node(child, new_anno, new_link, context) }
           out
         else
           []
@@ -84,17 +82,12 @@ module Utils
       end
 
       def newline_span(annotations, link, context)
-        span = NotionSpan.new(text: "\n", annotations: annotations, link: link)
-        Logger.debug("[RichText] produced newline => #{span.debug_description} (#{context})")
-        span
+        NotionSpan.new(text: "\n", annotations: annotations, link: link)
       end
 
       def mention_span(node, annotations, link, context)
-        figure = node.at_css('figure')
-        caption = figure&.at_css('figcaption')&.text&.strip || "Unknown"
-        text = "👤 #{caption}"
-        Logger.debug("[RichText] parsed mention span => #{text.inspect} (#{context})")
-        NotionSpan.new(text: text, annotations: annotations, link: link)
+        caption = node.at_css('figcaption')&.text&.strip || "Unknown"
+        NotionSpan.new(text: "👤 #{caption}", annotations: annotations, link: link)
       end
 
       def merge_consecutive_spans(spans)
@@ -112,30 +105,24 @@ module Utils
 
       def trim_trailing_newlines(spans)
         return if spans.empty?
-        last_span = spans[-1]
-        if last_span.content.match?(/\n+$/)
-          last_span.content = last_span.content.sub(/\n+$/, "")
-          spans.pop if last_span.content.empty?
+        last = spans.last
+        if last.content.match?(/\n+$/)
+          last.content = last.content.sub(/\n+$/, "")
+          spans.pop if last.content.empty?
         end
       end
 
       def chunk_spans(spans)
-        results = []
-        spans.each do |span|
+        spans.flat_map do |span|
           text = span.content
           if text.size <= MAX_NOTION_TEXT_LENGTH
-            results << span
+            [span]
           else
-            offset = 0
-            while offset < text.size
-              slice = text[offset, MAX_NOTION_TEXT_LENGTH]
-              offset += MAX_NOTION_TEXT_LENGTH
-              new_span = NotionSpan.new(text: slice, annotations: span.annotations.dup, link: span.link)
-              results << new_span
+            text.chars.each_slice(MAX_NOTION_TEXT_LENGTH).map do |slice|
+              NotionSpan.new(text: slice.join, annotations: span.annotations.dup, link: span.link)
             end
           end
         end
-        results
       end
     end
   end
