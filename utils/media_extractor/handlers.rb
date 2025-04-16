@@ -130,58 +130,10 @@ module Utils
         false
       end
 
-      # -------------------------------------------------------
-      # bc-attachment
-      # -------------------------------------------------------
-      def self.process_bc_attachment(node, context)
+      def self._process_bc_attachment_or_figure(node, raw_url, context)
+        return [] if raw_url.nil? || raw_url.empty?
+
         blocks = []
-        raw_url = node['url'] || node['href'] || node['src']
-        # if there's a figure inside => process_figure
-        return process_figure(node, context) if node.at_css('figure')
-
-        caption = node.at_css('figcaption')&.text&.strip || node['caption']
-        caption = caption.gsub(/\s+/, ' ') if caption
-
-        resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
-
-        if !resolved_url || Resolver.basecamp_asset_url?(resolved_url)
-          return ::Notion::Helpers.basecamp_asset_fallback_blocks(resolved_url || raw_url, caption, context)
-        elsif resolved_url.end_with?('.pdf')
-          return [Helpers.pdf_file_block(resolved_url, context)]
-        elsif Resolver.embeddable_media_url?(resolved_url)
-          # => e.g. giphy => embed as image
-          blocks << {
-            object: 'block',
-            type: 'image',
-            image: {
-              type: 'external',
-              external: { url: resolved_url }
-            }
-          }
-          blocks << ::Notion::Helpers.text_block("Caption: #{caption}", context).first if caption && !caption.empty?
-        else
-          blocks << Helpers.build_embed_block(resolved_url, context)
-          if caption && !caption.empty?
-            blocks << {
-              object: 'block',
-              type: 'paragraph',
-              paragraph: {
-                rich_text: [Helpers.text_segment("Caption: #{caption}")]
-              }
-            }
-          end
-        end
-
-        blocks
-      end
-
-      # -------------------------------------------------------
-      # figure
-      # -------------------------------------------------------
-      def self.process_figure(node, context)
-        blocks = []
-        img = node.at_css('img')
-        raw_url = img&.[]('src')&.strip
 
         # remove figcaption from DOM
         caption_node = node.at_css('figcaption')
@@ -194,25 +146,41 @@ module Utils
         resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
 
         if !resolved_url || Resolver.basecamp_asset_url?(resolved_url)
-          blocks.concat ::Notion::Helpers.basecamp_asset_fallback_blocks(resolved_url || raw_url, caption, context)
+          return ::Notion::Helpers.basecamp_asset_fallback_blocks(resolved_url || raw_url, caption, context)
         elsif resolved_url.end_with?('.pdf')
-            blocks << Helpers.pdf_file_block(resolved_url, context)
+          return [Helpers.pdf_file_block(resolved_url, context)]
         elsif Resolver.embeddable_media_url?(resolved_url)
           # => e.g. giphy => embed as image
-          blocks << {
-            object: 'block',
-            type: 'image',
-            image: {
-              type: 'external',
-              external: { url: resolved_url }
-            }
-          }
+          blocks << ::Notion::Helpers.image_block(resolved_url, caption).first
           blocks << ::Notion::Helpers.text_block("Caption: #{caption}", context).first if caption && !caption.empty?
         else
           blocks << Helpers.build_embed_block(resolved_url, context)
+          blocks << ::Notion::Helpers.text_block("Caption: #{caption}", context).first if caption && !caption.empty?
         end
 
-        blocks
+        blocks.compact
+      end
+
+      # -------------------------------------------------------
+      # bc-attachment
+      # -------------------------------------------------------
+      def self.process_bc_attachment(node, context)
+        # if there's a figure inside => process_figure
+        return process_figure(node, context) if node.at_css('figure')
+
+        raw_url = (node['url'] || node['href'] || node['src'])&.strip
+
+        _process_bc_attachment_or_figure(node, raw_url, context)
+      end
+
+      # -------------------------------------------------------
+      # figure
+      # -------------------------------------------------------
+      def self.process_figure(node, context)
+        img = node.at_css('img')
+        raw_url = img&.[]('src')&.strip
+
+        _process_bc_attachment_or_figure(node, raw_url, context)
       end
 
       # -------------------------------------------------------

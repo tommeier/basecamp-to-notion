@@ -102,8 +102,25 @@ module Notion
       }
     end
 
+    def self.image_block(url, context)
+      return [] unless url && !url.strip.empty?
+
+      {
+        object: 'block',
+        type: 'image',
+        image: {
+          type: 'external',
+          external: { url: url }
+        }
+      }.tap do |block|
+        debug "[image_block] => #{block.inspect} (#{context})"
+      end
+    end
+
     # ✅ PDF embed block
     def self.pdf_file_block(url, context)
+      return [] unless url && !url.strip.empty?
+
       {
         object: 'block',
         type: 'file',
@@ -190,8 +207,10 @@ module Notion
       debug "📎 [basecamp_asset_fallback_blocks] Creating fallback callout for #{url} (#{context})"
 
       cleaned = url.to_s.strip
-      # if cleaned is empty => can't link
-      link_obj = cleaned.empty? ? nil : { url: cleaned }
+      uri = URI.parse(cleaned) rescue nil
+      link_obj = uri&.scheme&.match?(/^https?$/) ? { url: cleaned } : nil
+
+      return [] unless link_obj
 
       main_richtext = []
       main_richtext << {
