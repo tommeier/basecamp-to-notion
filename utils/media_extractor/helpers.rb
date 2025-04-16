@@ -41,19 +41,6 @@ module Utils
         { type: "text", text: text }
       end
 
-      def self.empty_paragraph_block
-        {
-          object: "block",
-          type: "paragraph",
-          paragraph: {
-            rich_text: [{
-              type: "text",
-              text: { content: " " }
-            }]
-          }
-        }
-      end
-
       def self.fallback_paragraph_block(text)
         cleaned = text.to_s.strip
         {
