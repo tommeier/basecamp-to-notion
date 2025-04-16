@@ -11,11 +11,11 @@ module Notion
     extend ::Utils::Logging
 
     # ✅ General text block helper
-    def self.text_block(text, context = nil)
+    def self.text_blocks(text, context = nil)
       blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
         text,
         nil,
-        "TextBlock#{context ? " (#{context})" : ""}"
+        "TextBlocks#{context ? " (#{context})" : ""}"
       )
 
       total_blocks = blocks.size + embed_blocks.size
@@ -25,26 +25,27 @@ module Notion
       (blocks + embed_blocks).compact
     end
 
+
     # ✅ Heading block helper
-    def self.heading_block(text, level = 2, context = nil)
+    def self.heading_blocks(text, level = 2, context = nil)
       blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
         text,
         nil,
-        "HeadingBlock#{context ? " (#{context})" : ""}"
+        "HeadingBlocks#{context ? " (#{context})" : ""}"
       )
 
       return [] if blocks.compact.empty?
 
       if blocks.size > 1
-        warn "⚠️ [heading_block] Multiple blocks detected (#{blocks.size}) — expected single rich_text block. Context: #{context}"
+        warn "⚠️ [heading_blocks] Multiple blocks detected (#{blocks.size}) — expected single rich_text block. Context: #{context}"
       end
 
       first_block = blocks.shift
       rich_text = (first_block.dig(:paragraph, :rich_text) || []).compact
       return [] if rich_text.empty?
 
-      debug "🧩 [heading_block] Building heading level #{level} block for context: #{context}, rich_text size: #{rich_text.size}"
-      debug_rich_text_preview(rich_text, context: context, label: "heading_block rich_text")
+      debug "🧩 [heading_blocks] Building heading level #{level} block for context: #{context}, rich_text size: #{rich_text.size}"
+      debug_rich_text_preview(rich_text, context: context, label: "heading_blocks rich_text")
 
       [{
         object: "block",
@@ -54,11 +55,11 @@ module Notion
     end
 
     # ✅ Callout block helper
-    def self.callout_block(text, emoji = "💬", context = nil)
+    def self.callout_blocks(text, emoji = "💬", context = nil)
       blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
         text,
         nil,
-        "CalloutBlock#{context ? " (#{context})" : ""}"
+        "CalloutBlocks#{context ? " (#{context})" : ""}"
       )
 
       return [] if blocks.compact.empty?
@@ -71,8 +72,8 @@ module Notion
       rich_text = (first_block.dig(:paragraph, :rich_text) || []).compact
       return [] if rich_text.empty?
 
-      debug "🧩 [callout_block] Building callout block for context: #{context}, rich_text size: #{rich_text.size}"
-      debug_rich_text_preview(rich_text, context: context, label: "callout_block rich_text")
+      debug "🧩 [callout_blocks] Building callout block for context: #{context}, rich_text size: #{rich_text.size}"
+      debug_rich_text_preview(rich_text, context: context, label: "callout_blocks rich_text")
 
       [{
         object: "block",
@@ -133,6 +134,19 @@ module Notion
       end
     end
 
+    def self.empty_paragraph_block
+      {
+        object: "block",
+        type: "paragraph",
+        paragraph: {
+          rich_text: [{
+            type: "text",
+            text: { content: " " }
+          }]
+        }
+      }
+    end
+
     # ✅ Divider block
     def self.divider_block
       debug "🧩 [divider_block] Creating divider block"
@@ -160,24 +174,24 @@ module Notion
     end
 
     # ✅ Comment section wrapper
-    def self.comment_section_block(comment_blocks, context = nil)
+    def self.comment_section_blocks(comment_blocks, context = nil)
       compacted_comments = deep_compact_blocks(comment_blocks)
       return [] if compacted_comments.empty?
 
-      debug "🗨️ [comment_section_block] Building comment section block with #{compacted_comments.size} inner blocks (#{context})"
+      debug "🗨️ [comment_section_blocks] Building comment section block with #{compacted_comments.size} inner blocks (#{context})"
 
       [
         divider_block,
-        heading_block("🗨️ Comments:", 2, context),
+        *heading_blocks("🗨️ Comments:", 2, context),
         *compacted_comments,
         divider_block
-      ].flatten.compact
+      ].compact
     end
 
     # ✅ Comment author callout
     def self.comment_author_block(author_name, created_at, context = nil)
       debug "🧩 [comment_author_block] Building comment author block for #{author_name} at #{created_at} (#{context})"
-      callout_block("👤 #{author_name} · 🕗 #{created_at}", "💬", context).compact
+      callout_blocks("👤 #{author_name} · 🕗 #{created_at}", "💬", context).compact
     end
 
     # ✅ Callout wrapper
@@ -200,7 +214,7 @@ module Notion
           }
         },
         *compacted_blocks
-      ].flatten.compact
+      ]
     end
 
     def self.basecamp_asset_fallback_blocks(url, caption, context)
