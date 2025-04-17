@@ -16,40 +16,51 @@ module Utils
 
       SKIP_CHILDREN_NODES = ['bc-attachment']
 
-      def self.inside_bc_attachment?(node)
-        node.ancestors.any? { |ancestor| ancestor.name == 'bc-attachment' }
-      end
-
-      def self.handle_node_recursive(node, context, parent_page_id, notion_blocks, embed_blocks)
+      def self.handle_node_recursive(node, context, parent_page_id, notion_blocks, embed_blocks, seen_nodes = Set.new)
         return if node.comment?
+        return if seen_nodes.include?(node.object_id)
 
-        if node.name.downcase == 'figcaption'
-          debug "[handle_node_recursive] forcibly skipping <figcaption> (#{context})"
+        # Skip to allow for nested lists
+        if node.name.downcase == 'li' || node.ancestors.any? { |a| a.name == 'li' }
+          debug "↪️ [handle_node_recursive] Skipping <li> or child-of-li node: <#{node.name}> (#{context})"
           return
         end
 
-        if %w[div p].include?(node.name)
+        # Track seen to avoid duplicates
+        seen_nodes << node.object_id
+
+        debug "[handle_node_recursive] visiting <#{node.name}> (#{context})"
+
+        # Handle directly due to wrapping html objects
+        case node.name.downcase
+        when 'div', 'p'
           notion_blocks.concat process_div_or_paragraph(node, context)
           return
+        when 'ul', 'ol'
+          nested_blocks = build_nested_list_blocks(node, context, seen_nodes)
+          notion_blocks.concat(nested_blocks)
+          return
         end
 
-        handle_node(node, context, notion_blocks, embed_blocks)
+        handle_node(node, context, notion_blocks, embed_blocks, seen_nodes)
         return if SKIP_CHILDREN_NODES.include?(node.name)
 
         node.children.each do |child|
           next unless child.element?
-          handle_node_recursive(child, context, parent_page_id, notion_blocks, embed_blocks)
+          handle_node_recursive(child, context, parent_page_id, notion_blocks, embed_blocks, seen_nodes)
         end
       end
 
-      def self.handle_node(node, context, notion_blocks, embed_blocks)
+
+      def self.handle_node(node, context, notion_blocks, embed_blocks, seen_nodes = Set.new)
         return if inside_bc_attachment?(node) && node.name != 'bc-attachment'
 
         case node.name.downcase
-        when 'div', 'p'
-          # => already handled by handle_node_recursive
+        when 'div', 'p', 'ul', 'ol', 'li'
+          # Handled in handle_node_recursive
         when 'br'
           # => skip
+          return
         when 'bc-attachment'
           # Skip here — handled inline in RichText as emoji fallback with name
           # Notion won't allow small inline images for the avatars
@@ -64,11 +75,6 @@ module Utils
           notion_blocks.concat(blocks)
         when 'figcaption'
           debug "[handle_node] forcibly skipping <figcaption> (#{context})"
-        when 'ul', 'ol'
-          list_blocks, list_embeds = process_list(node, node.name == 'ul' ? 'unordered' : 'ordered', context)
-          validate_blocks!(list_blocks, 'process_list', node, context)
-          notion_blocks.concat(list_blocks)
-          embed_blocks.concat(list_embeds)
         when 'pre'
           blocks = process_code_block(node, context)
           validate_blocks!(blocks, 'process_code_block', node, context)
@@ -98,42 +104,22 @@ module Utils
         end
       end
 
-      def self.validate_blocks!(blocks, origin, node, context)
-        # Unomment this for deep validation of blocks in case of errors
-        # unless blocks.is_a?(Array) && blocks.all? { |b| b.is_a?(Hash) && b[:object] == 'block' }
-        #   warn "❌ [#{origin}] produced invalid block(s): #{blocks.inspect}"
-        #   warn "🧩 From node: #{node.to_html.strip} (#{context})"
-        #   raise "Invalid block from #{origin}"
-        # end
-      end
-
       def self.process_div_or_paragraph(node, context)
-        blocks = []
-        if empty_or_whitespace_div?(node)
-          blocks << Notion::Helpers.empty_paragraph_block
-          return blocks
-        end
+        return [Notion::Helpers.empty_paragraph_block] if empty_or_whitespace_div?(node)
 
         html_str = node.inner_html
         debug "[process_div_or_paragraph] => #{html_str.inspect} (#{context})"
         parsed_fragment = Nokogiri::HTML.fragment(html_str)
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(parsed_fragment, context)
-        return blocks if rich_text.empty?
+        return [] if rich_text.empty?
 
-        # if single text is only whitespace, skip
-        if rich_text.size == 1 && rich_text[0][:type] == 'text'
-          text_content = rich_text[0].dig(:text, :content).to_s
-          return [] if text_content.strip.empty?
-        end
-
-        block = {
-          object: 'block',
-          type: 'paragraph',
-          paragraph: { rich_text: rich_text }
-        }
-        debug "[process_div_or_paragraph] built => #{block.inspect} (#{context})"
-        blocks << block
-        blocks
+        [
+          {
+            object: 'block',
+            type: 'paragraph',
+            paragraph: { rich_text: rich_text }
+          }
+        ]
       end
 
       def self.empty_or_whitespace_div?(node)
@@ -143,17 +129,75 @@ module Utils
         false
       end
 
+      def self.build_nested_list_blocks(list_node, context, seen_nodes)
+        blocks = []
+
+        list_node.xpath('./li').each do |li_node|
+          next if seen_nodes.include?(li_node.object_id)
+          seen_nodes << li_node.object_id
+
+          content_nodes = li_node.children.reject { |child| %w[ul ol].include?(child.name.downcase) }
+          nested_lists  = li_node.children.select { |child| %w[ul ol].include?(child.name.downcase) }
+
+          content_html = content_nodes.map(&:to_html).join.strip
+          fragment = Nokogiri::HTML.fragment(content_html)
+          rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(fragment, context)
+
+          next if rich_text.empty?
+
+          block_type = list_node.name.downcase == 'ol' ? 'numbered_list_item' : 'bulleted_list_item'
+
+          # Create valid block with children inside type container
+          block = {
+            object: 'block',
+            type: block_type,
+            block_type.to_sym => {
+              rich_text: rich_text
+            }
+          }
+
+          nested_blocks = nested_lists.flat_map do |sublist|
+            build_nested_list_blocks(sublist, context, seen_nodes)
+          end
+
+          if nested_blocks.any?
+            if li_node.ancestors.count { |a| a.name == 'li' } >= 2
+              log "⚠️ [build_nested_list_blocks] Skipping deeper nesting for li due to Notion limit of a depth of 3 (#{context})"
+              # Promote instead of nesting - this puts it above where it should go, but its easier
+              blocks.concat(nested_blocks)
+            else
+              block[block_type.to_sym][:children] = nested_blocks
+            end
+          end
+
+          blocks << block
+        end
+
+        blocks
+      end
+
+      def self.validate_blocks!(blocks, origin, node, context)
+        # Optional: add JSON structure validation here
+        # Unomment this for deep validation of blocks in case of errors
+        # unless blocks.is_a?(Array) && blocks.all? { |b| b.is_a?(Hash) && b[:object] == 'block' }
+        #   warn "❌ [#{origin}] produced invalid block(s): #{blocks.inspect}"
+        #   warn "🧩 From node: #{node.to_html.strip} (#{context})"
+        #   raise "Invalid block from #{origin}"
+        # end
+      end
+
       def self._process_bc_attachment_or_figure(node, raw_url, context)
         return [] if raw_url.nil? || raw_url.empty?
         blocks = []
 
-        # remove figcaption from DOM (removes duplicates on traaversal)
         caption_node = node.at_css('figcaption')
         caption = caption_node&.text&.strip
         caption_node&.remove
 
-        # remove leftover text nodes
+        # remove figcaption from DOM (removes duplicates on traversal)
         node.xpath('text()').each { |txt| txt.remove if txt.text.strip.empty? }
+
+        # remove leftover text nodes
         resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
 
         if !resolved_url || Resolver.basecamp_asset_url?(resolved_url)
@@ -208,24 +252,8 @@ module Utils
         [{ object: 'block', type: 'quote', quote: { rich_text: rich_text } }]
       end
 
-      def self.process_list(node, list_type, context)
-        blocks = []
-        embeds = []
-        node.css('li').each do |li|
-          li_html = li.inner_html.strip
-          li_frag = Nokogiri::HTML.fragment(li_html)
-          li_rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(li_frag, context)
-          next if li_rich_text.empty?
-          block = {
-            object: 'block',
-            type: (list_type == 'unordered' ? 'bulleted_list_item' : 'numbered_list_item'),
-            (list_type == 'unordered' ? :bulleted_list_item : :numbered_list_item) => {
-              rich_text: li_rich_text
-            }
-          }
-          blocks << block
-        end
-        [blocks, embeds]
+      def self.inside_bc_attachment?(node)
+        node.ancestors.any? { |ancestor| ancestor.name == 'bc-attachment' }
       end
     end
   end
