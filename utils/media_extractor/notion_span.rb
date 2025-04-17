@@ -15,6 +15,7 @@ module Utils
       # Merge consecutive spans with identical formatting
       def merge_if_compatible!(other)
         return false unless same_format?(other)
+        return false if (self.content.bytesize + other.content.bytesize) > 2000
         self.content << other.content
         true
       end
