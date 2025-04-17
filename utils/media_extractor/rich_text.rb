@@ -28,18 +28,26 @@ module Utils
 
         sanitize_links!(merged, context)
 
-        chunked = chunk_spans(merged)
+        chunked = chunk_spans(merged, context)
 
         Logger.debug("[RichText] final chunked => #{chunked.map(&:debug_description)} (#{context})")
 
-        chunked.map(&:to_notion_rich_text)
+        rich_texts = chunked.map(&:to_notion_rich_text)
+
+        # Validate final lengths (debugging)
+        rich_texts.each_with_index do |rtext, idx|
+          length = rtext.dig(:text, :content)&.length || 0
+          if length > MAX_NOTION_TEXT_LENGTH
+            Logger.error("❌ Span too long after chunking: #{length} chars (block #{idx}) (#{context})")
+          end
+        end
+
+        rich_texts
       rescue => e
         Logger.error("[RichText] error: #{e.message}\n#{e.backtrace.join("\n")}")
         []
       end
 
-
-      # ✅ Safely handle plain string (e.g., for <pre>, headings, quotes)
       def extract_rich_text_from_string(str, context = nil)
         return [] if str.nil? || str.empty?
         safe_html = "<div>#{CGI.escapeHTML(str)}</div>"
@@ -116,12 +124,13 @@ module Utils
         end
       end
 
-      def chunk_spans(spans)
+      def chunk_spans(spans, context)
         spans.flat_map do |span|
           text = span.content
           if text.size <= MAX_NOTION_TEXT_LENGTH
             [span]
           else
+            Logger.warn("⚠️ Chunking oversized span: #{text.length} chars (#{context})")
             text.chars.each_slice(MAX_NOTION_TEXT_LENGTH).map do |slice|
               NotionSpan.new(text: slice.join, annotations: span.annotations.dup, link: span.link)
             end
@@ -144,7 +153,6 @@ module Utils
           end
         end
       end
-
     end
   end
 end
