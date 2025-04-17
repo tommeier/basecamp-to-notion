@@ -205,6 +205,11 @@ RESET=true ruby basecamp_to_notion_via_api.rb
 
 ## 🧩 Limitations & Notes on Files and Assets
 
+### Nested lists
+
+- Notion limits nested ordered/unordered lists to a depth of 3.
+- Anything seen deeper than this is shoved in the parent list as only option - otherwise Notion returns a 400.
+
 ### 🚧 Basecamp Files Are Protected
 
 - Basecamp's media files require authentication.
