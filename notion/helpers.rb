@@ -142,25 +142,6 @@ module Notion
       { object: "block", type: "divider", divider: {} }
     end
 
-    def self.index_link_block(page_id, title, emoji)
-      return [] unless page_id
-
-      debug "🧩 [index_link_block] Creating index link block for page: #{title}"
-
-      {
-        object: "block",
-        type: "paragraph",
-        paragraph: {
-          rich_text: [
-            { type: "emoji", emoji: emoji },
-            { type: "text", text: { content: " " } },
-            { type: "mention", mention: { page: { id: page_id } } },
-            { type: "text", text: { content: " – #{title}" } }
-          ].compact
-        }
-      }
-    end
-
     def self.comment_section_blocks(comment_blocks, context = nil)
       compacted = deep_compact_blocks(comment_blocks)
       return [] if compacted.empty?

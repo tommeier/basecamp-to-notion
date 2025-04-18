@@ -21,7 +21,6 @@ module Notion
       project_start_time = Time.now
       project_page_id = nil
 
-      # ✅ Detect archive status early
       is_archived = project["status"] == "archived"
       project_name = is_archived ? "📦 #{project["name"]}" : project["name"]
 
@@ -49,10 +48,8 @@ module Notion
 
       $global_project_count += 1
 
-      index_items = []
       tool_block_counts = {}
       total_blocks = 0
-
       tools = (project["dock"] || [])
 
       threads = tools.map do |tool|
@@ -120,19 +117,10 @@ module Notion
               if blocks.any?
                 if blocks.size > MAX_BLOCKS_PER_TOOL_PAGE
                   log "📝 [#{name}] Splitting tool page into subpages (#{blocks.size} blocks)..."
-                  subpages = Notion::Utils.split_blocks_into_subpages(blocks, title, emoji, tool_page_id)
-
-                  subpages.each do |subpage|
-                    index_items << Notion::Helpers.index_link_block(subpage[:id], subpage[:title], emoji)
-                  end
-
-                  index_items << Notion::Helpers.index_link_block(tool_page_id, "#{emoji} #{title} (Overview)", emoji)
+                  Notion::Utils.split_blocks_into_subpages(blocks, title, emoji, tool_page_id)
                 else
                   Notion::Blocks.append(tool_page_id, blocks, context: "Tool Page: #{emoji} #{title}")
-                  index_items << Notion::Helpers.index_link_block(tool_page_id, "#{emoji} #{title}", emoji)
                 end
-
-                index_items.compact!
               else
                 log "📝 [#{name}] No blocks to append."
               end
@@ -157,23 +145,8 @@ module Notion
       threads.each(&:join)
 
       if $shutdown
-        log "🛑 Global shutdown detected before final index append. Skipping index block creation."
+        log "🛑 Global shutdown detected before final block. Skipping."
         return
-      end
-
-      if index_items.any?
-        index_blocks = [
-          *Notion::Helpers.heading_blocks("🗂️ Index", 2, "Index"),
-          Notion::Helpers.divider_block,
-          *Notion::Helpers.callout_blocks("Quick Links to Tools", "🚀", "Index"),
-          Notion::Helpers.divider_block,
-          *index_items,
-          Notion::Helpers.divider_block
-        ]
-
-        Notion::Blocks.append(project_page_id, index_blocks, context: "Index Page")
-      else
-        log "📝 No tools processed, skipping index block"
       end
 
       if tool_block_counts.any?
