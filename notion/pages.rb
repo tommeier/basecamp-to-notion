@@ -95,7 +95,7 @@ module Notion
         }
       ]
 
-      if source_url
+      if source_url && source_url.strip != ''
         web_url = source_url
           .gsub('basecampapi.com', 'basecamp.com')
           .gsub(/\.json$/, '')
@@ -105,6 +105,15 @@ module Notion
           text: {
             content: web_url,
             link: { url: web_url }
+          }
+        }
+      end
+
+      if rich_text.empty?
+        rich_text << {
+          type: "text",
+          text: {
+            content: "Migrated from Basecamp — source unavailable"
           }
         }
       end
