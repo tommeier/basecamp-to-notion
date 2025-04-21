@@ -47,9 +47,6 @@ module Notion
       end
 
       $global_project_count += 1
-
-      tool_block_counts = {}
-      total_blocks = 0
       tools = (project["dock"] || [])
 
       threads = tools.map do |tool|
@@ -104,26 +101,7 @@ module Notion
 
               raise Interrupt, "Shutdown before handler call" if $shutdown
 
-              blocks = handler.call(project, tool, tool_page_id, headers, progress) || []
-
-              unless blocks.is_a?(Array)
-                warn "🚫 [#{name}] Handler did not return an array. Got: #{blocks.inspect}"
-                blocks = []
-              end
-
-              tool_block_counts[name] = blocks.size
-              total_blocks += blocks.size
-
-              if blocks.any?
-                if blocks.size > MAX_BLOCKS_PER_TOOL_PAGE
-                  log "📝 [#{name}] Splitting tool page into subpages (#{blocks.size} blocks)..."
-                  Notion::Utils.split_blocks_into_subpages(blocks, title, emoji, tool_page_id)
-                else
-                  Notion::Blocks.append(tool_page_id, blocks, context: "Tool Page: #{emoji} #{title}")
-                end
-              else
-                log "📝 [#{name}] No blocks to append."
-              end
+              handler.call(project, tool, tool_page_id, headers, progress) || []
 
               progress.complete_tool(project["id"], name)
               log "✅ [#{name}] Finished tool sync."
@@ -147,11 +125,6 @@ module Notion
       if $shutdown
         log "🛑 Global shutdown detected before final block. Skipping."
         return
-      end
-
-      if tool_block_counts.any?
-        summary = tool_block_counts.map { |tool, count| "#{tool}=#{count} blocks" }.join(", ")
-        log "🗂️ Tool summary: #{summary}"
       end
 
       duration = Time.now - project_start_time

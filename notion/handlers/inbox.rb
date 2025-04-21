@@ -64,9 +64,8 @@ module Notion
         # ✅ Sanitize and append safely
         Notion::Blocks.append(parent_page_id, blocks, context: "Inbox #{tool['title']}")
 
-        # ✅ Return index block for tool index page
-        index_block = Notion::Helpers.index_link_block(parent_page_id, tool['title'], "📥")
-        [index_block].compact
+        log "📦 InboxHandler: Finished processing '#{tool['title']}'"
+        []
       end
     end
   end

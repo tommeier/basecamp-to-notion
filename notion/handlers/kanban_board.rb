@@ -102,8 +102,8 @@ module Notion
 
         Notion::Blocks.append_batched(parent_page_id, blocks, context: "KanbanBoard #{tool['title']}'")
 
-        index_block = Notion::Helpers.index_link_block(parent_page_id, tool['title'], "🗂️")
-        [index_block].compact
+        log "📦 KanbanHandler: Finished processing '#{tool['title']}'"
+        []
       end
     end
   end
