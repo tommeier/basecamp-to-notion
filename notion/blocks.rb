@@ -30,7 +30,6 @@ module Notion
       [notion_blocks.compact, embed_blocks.compact]
     end
 
-    # Centralized batching logic
     def self.append_batched(page_id, blocks, context: nil)
       context ||= "Page: #{page_id}"
       batches = blocks.each_slice(MAX_BLOCKS_PER_REQUEST).to_a
@@ -71,23 +70,22 @@ module Notion
         debug "    [block #{idx}] type='#{block["type"]}', size=#{block_size} bytes, children=#{children_count}"
       end
 
-      # Split large parent blocks
+      # Split large children
       blocks = split_large_blocks(blocks, MAX_PAYLOAD_BYTES, MAX_CHILDREN_PER_BLOCK, context)
-      log "🧩 [append] Post-split: total blocks: #{blocks.size} (#{context})"
 
-      # Split into payload size batches
-      batches = split_blocks_by_payload_size(blocks, MAX_PAYLOAD_BYTES)
-      log "🧩 [append] Split into #{batches.size} batches (#{context})"
+      # Split by payload size
+      payload_batches = split_blocks_by_payload_size(blocks, MAX_PAYLOAD_BYTES)
+      log "🧩 [append] Payload-split into #{payload_batches.size} groups (#{context})"
 
-      batches.each_with_index do |block_slice, idx|
-        if block_slice.nil? || block_slice.empty?
-          warn "⚠️ [append] Skipping empty batch #{idx + 1}/#{batches.size} (#{context})"
-          next
-        end
+      # Enforce max 100 blocks per request
+      final_batches = payload_batches.flat_map { |batch| batch.each_slice(MAX_BLOCKS_PER_REQUEST).to_a }
+      log "🧩 [append] Final sliced into #{final_batches.size} batches (#{context})"
 
-        debug "🧩 [append] Preparing batch #{idx + 1}/#{batches.size} — #{block_slice.size} blocks"
+      final_batches.each_with_index do |block_slice, idx|
+        next if block_slice.nil? || block_slice.empty? || block_slice.all? { |b| !b.is_a?(Hash) || b["type"].nil? }
 
-        # Clean children
+        debug "🧩 [append] Preparing batch #{idx + 1}/#{final_batches.size} — #{block_slice.size} blocks"
+
         block_slice.each_with_index do |block, block_idx|
           if block["children"].is_a?(Array)
             before = block["children"].size
@@ -103,7 +101,6 @@ module Notion
         log "🧩 [append] Block validation: #{valid_block_count} valid, #{invalid_block_count} invalid"
 
         payload = { children: block_slice }
-
         debug "📦 [append] Final payload size: #{JSON.generate(payload).bytesize} bytes"
 
         begin
@@ -113,9 +110,8 @@ module Notion
             Notion::API.default_headers,
             context: context
           )
-          log "✅ [append] Successfully appended batch #{idx + 1}/#{batches.size} (#{block_slice.size} blocks)"
+          log "✅ [append] Successfully appended batch #{idx + 1}/#{final_batches.size} (#{block_slice.size} blocks)"
         rescue => e
-          # Log preview of first block in failing batch
           failing_preview = block_slice.first ? JSON.pretty_generate(block_slice.first)[0..500] : "No blocks in slice"
           error "❌ [append] Error appending to #{block_id}: #{e.message}"
           error "🔍 First block:\n#{failing_preview}"
@@ -124,7 +120,6 @@ module Notion
       end
     end
 
-    # Split blocks by estimated payload size (before hitting Notion limit)
     def self.split_blocks_by_payload_size(blocks, max_bytes)
       batches = []
       current_batch = []

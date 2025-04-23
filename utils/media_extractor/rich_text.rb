@@ -1,6 +1,7 @@
 # utils/media_extractor/rich_text.rb
-
+#
 require 'nokogiri'
+require_relative './constants'
 require_relative './notion_span'
 require_relative './logger'
 require 'cgi'
@@ -9,8 +10,6 @@ module Utils
   module MediaExtractor
     module RichText
       extend self
-
-      MAX_NOTION_TEXT_LENGTH = 2000
 
       def extract_rich_text_from_fragment(fragment, context = nil)
         return [] unless fragment
@@ -28,20 +27,17 @@ module Utils
 
         sanitize_links!(merged, context)
 
-        chunked = chunk_spans(merged, context)
-
-        Logger.debug("[RichText] final chunked => #{chunked.map(&:debug_description)} (#{context})")
-
-        rich_texts = chunked.map(&:to_notion_rich_text)
+        rich_texts = merged.flat_map(&:to_notion_rich_text)
 
         # Validate final lengths (debugging)
         rich_texts.each_with_index do |rtext, idx|
           length = rtext.dig(:text, :content)&.length || 0
           if length > MAX_NOTION_TEXT_LENGTH
-            Logger.error("❌ Span too long after chunking: #{length} chars (block #{idx}) (#{context})")
+            Logger.error("❌ Span too long after final chunking: #{length} chars (block #{idx}) (#{context})")
           end
         end
 
+        Logger.debug("[RichText] final output => #{rich_texts.inspect} (#{context})")
         rich_texts
       rescue => e
         Logger.error("[RichText] error: #{e.message}\n#{e.backtrace.join("\n")}")
@@ -124,32 +120,22 @@ module Utils
         end
       end
 
-      def chunk_spans(spans, context)
-        spans.flat_map do |span|
-          text = span.content
-          if text.size <= MAX_NOTION_TEXT_LENGTH
-            [span]
-          else
-            Logger.warn("⚠️ Chunking oversized span: #{text.length} chars (#{context})")
-            text.chars.each_slice(MAX_NOTION_TEXT_LENGTH).map do |slice|
-              NotionSpan.new(text: slice.join, annotations: span.annotations.dup, link: span.link)
-            end
-          end
-        end
-      end
-
+      # Notion will block invalid URLs - but sometimes they are valid and being used for descriptions - show inline as text if so
       def sanitize_links!(spans, context)
         spans.each do |span|
           next unless span.link.is_a?(String)
 
-          uri = URI.parse(span.link) rescue nil
-          unless uri&.scheme&.match?(/^https?$/)
-            Logger.warn("⚠️ Removing or fixing invalid URL in span: #{span.link.inspect} (#{context})")
-            if span.link.start_with?("www.")
-              span.link = "https://#{span.link}"
-            else
+          begin
+            uri = URI.parse(span.link.strip)
+            if !uri.scheme&.match?(/^https?$/) || uri.host.nil?
+              Logger.warn("⚠️ Invalid link detected, converting to plain text: #{span.link.inspect} (#{context})")
+              span.content += " (#{span.link})" unless span.content.include?(span.link)
               span.link = nil
             end
+          rescue URI::InvalidURIError => e
+            Logger.warn("⚠️ Invalid URI, converting to plain text (#{e.message}): #{span.link.inspect} (#{context})")
+            span.content += " (#{span.link})" unless span.content.include?(span.link)
+            span.link = nil
           end
         end
       end

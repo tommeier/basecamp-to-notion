@@ -58,32 +58,39 @@ module Utils
       def self.chunk_rich_text(rich_text)
         chunks = []
         current_chunk = []
-        current_length = 0
-        max_length = MAX_NOTION_TEXT_LENGTH - 100
+        current_bytesize = 0
+        max_bytes = MAX_NOTION_TEXT_LENGTH - 100
 
         rich_text.compact.each do |segment|
           content = segment.dig(:text, :content).to_s
           next if content.strip.empty?
 
-          length = content.length
+          encoded = content.encode("UTF-8")
 
-          if length > max_length
-            debug "🚨 [chunk_rich_text] Segment exceeds max length (#{length} chars) — splitting (forced)"
-            content.scan(/.{1,#{max_length}}/m).each do |part|
-              chunks << [{ type: "text", text: { content: part } }]
+          if encoded.bytesize > max_bytes
+            debug "🚨 [chunk_rich_text] Segment exceeds max byte limit (#{encoded.bytesize}) — splitting (safe)"
+            temp = ""
+            encoded.each_char do |char|
+              char_bytes = char.bytesize
+              if temp.bytesize + char_bytes > max_bytes
+                chunks << [{ type: "text", text: { content: temp } }]
+                temp = ""
+              end
+              temp << char
             end
+            chunks << [{ type: "text", text: { content: temp } }] unless temp.empty?
             next
           end
 
-          if current_length + length > max_length
+          if current_bytesize + encoded.bytesize > max_bytes
             chunks << current_chunk
-            debug "🧩 [chunk_rich_text] Chunk limit reached: #{current_length} chars, starting new chunk"
+            debug "🧩 [chunk_rich_text] Chunk byte limit reached: #{current_bytesize} bytes, starting new chunk"
             current_chunk = []
-            current_length = 0
+            current_bytesize = 0
           end
 
           current_chunk << segment
-          current_length += length
+          current_bytesize += encoded.bytesize
         end
 
         chunks << current_chunk unless current_chunk.empty?

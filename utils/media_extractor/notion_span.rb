@@ -1,4 +1,5 @@
 # utils/media_extractor/notion_span.rb
+require_relative './constants'
 
 module Utils
   module MediaExtractor
@@ -15,7 +16,7 @@ module Utils
       # Merge consecutive spans with identical formatting
       def merge_if_compatible!(other)
         return false unless same_format?(other)
-        return false if (self.content.bytesize + other.content.bytesize) > 2000
+        return false if (self.content.bytesize + other.content.bytesize) > MAX_NOTION_TEXT_LENGTH
         self.content << other.content
         true
       end
@@ -31,14 +32,34 @@ module Utils
         desc
       end
 
+      # Always chunks into safe ≤2000-char segments, returns array
       def to_notion_rich_text
-        text_hash = { content: content }
-        text_hash[:link] = { url: link } if link && !link.strip.empty?
-        {
-          type: 'text',
-          text: text_hash,
-          annotations: annotations.empty? ? {} : annotations
-        }
+        return [] if content.empty?
+
+        content.scan(/.{1,#{MAX_NOTION_TEXT_LENGTH}}/m).map do |chunk|
+          safe_link = nil
+          if link && link.strip.length <= MAX_NOTION_TEXT_LENGTH
+            begin
+              uri = URI.parse(link.strip)
+              if uri.host && uri.scheme&.match?(/^https?$/)
+                safe_link = link.strip
+              else
+                Utils::Logger.warn("⚠️ Invalid or incomplete URL rejected in NotionSpan: #{link.inspect}")
+              end
+            rescue URI::InvalidURIError => e
+              Utils::Logger.warn("⚠️ Invalid URI in NotionSpan (#{e.message}): #{link.inspect}")
+            end
+          end
+
+          {
+            type: 'text',
+            text: {
+              content: chunk,
+              link: safe_link ? { url: safe_link } : nil
+            }.compact,
+            annotations: annotations.empty? ? {} : annotations
+          }
+        end
       end
     end
   end

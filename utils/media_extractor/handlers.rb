@@ -51,7 +51,6 @@ module Utils
         end
       end
 
-
       def self.handle_node(node, context, notion_blocks, embed_blocks, seen_nodes = Set.new)
         return if inside_bc_attachment?(node) && node.name != 'bc-attachment'
 
@@ -113,13 +112,13 @@ module Utils
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(parsed_fragment, context)
         return [] if rich_text.empty?
 
-        [
+        Helpers.chunk_rich_text(rich_text).map do |chunk|
           {
             object: 'block',
             type: 'paragraph',
-            paragraph: { rich_text: rich_text }
+            paragraph: { rich_text: chunk }
           }
-        ]
+        end
       end
 
       def self.empty_or_whitespace_div?(node)
@@ -147,7 +146,6 @@ module Utils
 
           block_type = list_node.name.downcase == 'ol' ? 'numbered_list_item' : 'bulleted_list_item'
 
-          # Create valid block with children inside type container
           block = {
             object: 'block',
             type: block_type,
@@ -217,7 +215,6 @@ module Utils
       def self.process_bc_attachment(node, context)
         # if there's a figure inside => process_figure
         return process_figure(node, context) if node.at_css('figure')
-
         raw_url = (node['url'] || node['href'] || node['src'])&.strip
         _process_bc_attachment_or_figure(node, raw_url, context)
       end
@@ -233,7 +230,13 @@ module Utils
         return [] if text.empty?
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
         return [] if rich_text.empty?
-        [{ object: 'block', type: 'code', code: { rich_text: rich_text, language: 'plain text' } }]
+        Helpers.chunk_rich_text(rich_text).map do |chunk|
+          {
+            object: 'block',
+            type: 'code',
+            code: { rich_text: chunk, language: 'plain text' }
+          }
+        end
       end
 
       def self.process_heading_blocks(node, context, level:)
@@ -241,15 +244,27 @@ module Utils
         return [] if text.empty?
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
         return [] if rich_text.empty?
-        [{ object: 'block', type: "heading_#{level}", "heading_#{level}".to_sym => { rich_text: rich_text } }]
+        Helpers.chunk_rich_text(rich_text).map do |chunk|
+          {
+            object: 'block',
+            type: "heading_#{level}",
+            "heading_#{level}".to_sym => { rich_text: chunk }
+          }
+        end
       end
 
       def self.process_quote_block(node, context)
         text = node.text.strip
         return [] if text.empty?
-        rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
-        return [] if rich_text.empty?
-        [{ object: 'block', type: 'quote', quote: { rich_text: rich_text } }]
+        rich_spans = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
+        return [] if rich_spans.empty?
+        Helpers.chunk_rich_text(rich_spans).map do |chunk|
+          {
+            object: 'block',
+            type: 'quote',
+            quote: { rich_text: chunk }
+          }
+        end
       end
 
       def self.inside_bc_attachment?(node)
