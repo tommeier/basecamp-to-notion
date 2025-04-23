@@ -23,6 +23,7 @@ module Notion
 
       is_archived = project["status"] == "archived"
       project_name = is_archived ? "📦 #{project["name"]}" : project["name"]
+      project_name = "🔒 #{project_name}" if project["access"] == "invite_only"
 
       existing_project = progress.get_project(project["id"])
       if existing_project && existing_project["notion_page_id"]
