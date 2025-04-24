@@ -21,9 +21,33 @@ module Notion
       project_start_time = Time.now
       project_page_id = nil
 
+      # Archive status
       is_archived = project["status"] == "archived"
-      project_name = is_archived ? "📦 #{project["name"]}" : project["name"]
-      project_name = "🔒 #{project_name}" if project["access"] == "invite_only"
+
+      # Fetch full project details for metadata
+      details = {}
+      begin
+        details = Basecamp::Fetch.load_json(URI(project["url"]), headers) || {}
+      rescue => e
+        warn "⚠️ Could not fetch project details: #{e.message}"
+      end
+
+      # Count people with access
+      people_count = 0
+      begin
+        people = Basecamp::Fetch.load_json(
+          URI(project["url"].sub(/\.json$/, "/people.json")),
+          headers
+        )
+        people_count = people.size if people.is_a?(Array)
+      rescue => e
+        warn "⚠️ Could not fetch people for project #{project['id']}: #{e.message}"
+      end
+
+      # Build project name with icons
+      project_name = project["name"].dup
+      project_name.prepend("📦 ") if is_archived
+      project_name.prepend("🔒 ") if people_count < 50
 
       existing_project = progress.get_project(project["id"])
       if existing_project && existing_project["notion_page_id"]
@@ -33,17 +57,36 @@ module Notion
         raise Interrupt, "Shutdown before project creation" if $shutdown
 
         log "🆕 Creating Notion page for project: #{project_name}"
-        project_page = Notion::Pages.create_page(project.merge("name" => project_name, "archived" => is_archived), notion_root_page_id, children: [])
-        project_page_id = project_page["id"]
+        project_page = Notion::Pages.create_page(
+          project.merge("name" => project_name, "archived" => is_archived),
+          notion_root_page_id,
+          children: []
+        )
+        project_page_id = project_page&.dig("id")
 
         unless project_page_id
           raise "🚨 project_page_id is nil! Something is wrong."
         end
 
+        # Append metadata toggle block immediately after page
+        meta_block = Notion::Helpers.project_metadata_toggle_block(
+          project_url:    project["url"],
+          people_count:   people_count,
+          additional_info: {
+            "Created at" => details["created_at"],
+            "Purpose"    => details["purpose"]
+          }
+        )
+        Notion::Blocks.append(
+          project_page_id,
+          [meta_block],
+          context: "#{project_name} — Metadata Toggle"
+        )
+
         progress.upsert_project(
-          basecamp_id: project["id"],
-          name: project_name,
-          notion_page_id: project_page_id
+          basecamp_id:      project["id"],
+          name:             project_name,
+          notion_page_id:   project_page_id
         )
       end
 

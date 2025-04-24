@@ -10,7 +10,6 @@ module Notion
   module Helpers
     extend ::Utils::Logging
 
-    # ✅ General text block helper
     def self.text_blocks(text, context = nil)
       blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
         text,
@@ -25,7 +24,6 @@ module Notion
       (blocks + embed_blocks).compact
     end
 
-    # ✅ Heading block helper
     def self.heading_blocks(text, level = 2, context = nil)
       blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
         text,
@@ -40,7 +38,7 @@ module Notion
       end
 
       first_block = blocks.shift
-      rich_text = (first_block.dig(:paragraph, :rich_text) || []).compact
+      rich_text   = (first_block.dig(:paragraph, :rich_text) || []).compact
       return [] if rich_text.empty?
 
       debug "🧩 [heading_blocks] Building heading level #{level} block for context: #{context}, rich_text size: #{rich_text.size}"
@@ -48,12 +46,11 @@ module Notion
 
       [{
         object: "block",
-        type: "heading_#{level}",
+        type:   "heading_#{level}",
         "heading_#{level}": { rich_text: rich_text }
       }] + embed_blocks.compact
     end
 
-    # ✅ Callout block helper
     def self.callout_blocks(text, emoji = "💬", context = nil)
       blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(
         text,
@@ -68,7 +65,7 @@ module Notion
       end
 
       first_block = blocks.shift
-      rich_text = (first_block.dig(:paragraph, :rich_text) || []).compact
+      rich_text   = (first_block.dig(:paragraph, :rich_text) || []).compact
       return [] if rich_text.empty?
 
       debug "🧩 [callout_blocks] Building callout block for context: #{context}, rich_text size: #{rich_text.size}"
@@ -76,9 +73,9 @@ module Notion
 
       [{
         object: "block",
-        type: "callout",
+        type:   "callout",
         callout: {
-          icon: { type: "emoji", emoji: emoji },
+          icon:      { type: "emoji", emoji: emoji },
           rich_text: rich_text
         }
       }] + embed_blocks.compact
@@ -90,8 +87,8 @@ module Notion
       debug "🧩 [label_and_link_block] Building label and link block for: #{label} #{url} (#{context})"
 
       {
-        object: "block",
-        type: "paragraph",
+        object:    "block",
+        type:      "paragraph",
         paragraph: {
           rich_text: [
             { type: "text", text: { content: "#{label.to_s.strip} " } },
@@ -105,10 +102,10 @@ module Notion
       return [] unless url && !url.strip.empty?
 
       {
-        object: 'block',
-        type: 'image',
-        image: {
-          type: 'external',
+        object: "block",
+        type:   "image",
+        image:  {
+          type:     "external",
           external: { url: url }
         }
       }.tap { |block| debug "[image_block] => #{block.inspect} (#{context})" }
@@ -118,10 +115,10 @@ module Notion
       return [] unless url && !url.strip.empty?
 
       {
-        object: 'block',
-        type: 'file',
-        file: {
-          type: 'external',
+        object: "block",
+        type:   "file",
+        file:   {
+          type:     "external",
           external: { url: url }
         }
       }.tap { |block| debug "[pdf_file_block] => #{block.inspect} (#{context})" }
@@ -129,11 +126,9 @@ module Notion
 
     def self.empty_paragraph_block
       {
-        object: "block",
-        type: "paragraph",
-        paragraph: {
-          rich_text: [{ type: "text", text: { content: " " } }]
-        }
+        object:    "block",
+        type:      "paragraph",
+        paragraph: { rich_text: [{ type: "text", text: { content: " " } }] }
       }
     end
 
@@ -167,9 +162,9 @@ module Notion
       debug "🧩 [wrap_in_callout] Wrapping #{compacted.size} blocks in callout"
       [{
         object: "block",
-        type: "callout",
+        type:   "callout",
         callout: {
-          icon: { type: "emoji", emoji: emoji },
+          icon:      { type: "emoji", emoji: emoji },
           rich_text: [{ type: "text", text: { content: text } }]
         }
       }] + compacted
@@ -179,20 +174,20 @@ module Notion
       debug "📎 [basecamp_asset_fallback_blocks] Creating fallback callout for #{url} (#{context})"
 
       cleaned = url.to_s.strip
-      uri = URI.parse(cleaned) rescue nil
-      link = uri&.scheme&.match?(/^https?$/) ? { url: cleaned } : nil
+      uri     = URI.parse(cleaned) rescue nil
+      link    = uri&.scheme&.match?(/^https?$/) ? { url: cleaned } : nil
       return [] unless link
 
       rich_text = [{ type: 'text', text: { content: 'Basecamp asset', link: link } }]
       rich_text << { type: 'text', text: { content: " – #{caption}" } } if caption&.strip&.length&.positive?
 
       [{
-        object: 'block',
-        type: 'callout',
+        object:  'block',
+        type:    'callout',
         callout: {
-          icon: { type: 'emoji', emoji: '🔗' },
+          icon:      { type: 'emoji', emoji: '🔗' },
           rich_text: rich_text,
-          color: 'yellow_background'
+          color:     'yellow_background'
         }
       }]
     end
@@ -216,6 +211,53 @@ module Notion
 
     def self.deep_compact_blocks(blocks)
       (blocks || []).compact.reject { |b| b.nil? || b == {} }
+    end
+
+    # ----------------------
+    # Project Metadata Toggle Block
+    # ----------------------
+    # Builds a toggle block with project metadata (link, access count, additional fields)
+    def self.project_metadata_toggle_block(project_url:, people_count:, additional_info: {})
+      # Link to project
+      link_block = label_and_link_block("🔗 Project Link", project_url, "metadata")
+
+      # People count paragraph
+      count_block = {
+        object:    "block",
+        type:      "paragraph",
+        paragraph: {
+          rich_text: [
+            { type: "text", text: { content: "👥 People with access: #{people_count}" } }
+          ]
+        }
+      }
+
+      # Additional info blocks
+      info_blocks = additional_info.map do |label, value|
+        {
+          object:    "block",
+          type:      "paragraph",
+          paragraph: {
+            rich_text: [
+              { type: "text", text: { content: "#{label}: #{value}" } }
+            ]
+          }
+        }
+      end
+
+      children = [link_block, count_block] + info_blocks
+
+      {
+        object: "block",
+        type:   "toggle",
+        toggle: {
+          rich_text: [
+            { type: "text", text: { content: "🔍 Project metadata" } }
+          ],
+          children: children,
+          color: "blue_background"
+        },
+      }
     end
   end
 end
