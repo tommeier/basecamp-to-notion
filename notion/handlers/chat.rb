@@ -104,42 +104,49 @@ module Notion
         lines.each_with_index do |line, idx|
           next if line["content"].nil? || line["content"].strip.empty?
 
-          context = "Chat #{year} Batch #{batch_number} Line #{idx + 1}"
-          raw_preview = line.to_json[0..500]
-          log "🧩 Raw Basecamp line #{idx + 1}/#{lines.size} in batch #{batch_number}: #{raw_preview}"
+          begin
+            context = "Chat #{year} Batch #{batch_number} Line #{idx + 1}"
+            raw_preview = line.to_json[0..500]
+            log "🧩 Raw Basecamp line #{idx + 1}/#{lines.size} in batch #{batch_number}: #{raw_preview}"
 
-          # ✅ Progress: upsert item at start
-          progress.upsert_item(
-            basecamp_id: line["id"],
-            project_basecamp_id: project["id"],
-            tool_name: "chat"
-          )
+            # ✅ Progress: upsert item at start
+            progress.upsert_item(
+              basecamp_id: line["id"],
+              project_basecamp_id: project["id"],
+              tool_name: "chat"
+            )
 
-          line_blocks = []
+            line_blocks = []
 
-          # 🧩 Author callout
-          author = line.dig("creator", "name") || "Unknown author"
-          created_at = line["created_at"] ? Notion::Utils.format_timestamp(line["created_at"]) : "Unknown date"
-          author_line = "#{author} (#{created_at}):"
+            # 🧩 Author callout
+            author = line.dig("creator", "name") || "Unknown author"
+            created_at = line["created_at"] ? Notion::Utils.format_timestamp(line["created_at"]) : "Unknown date"
+            author_line = "#{author} (#{created_at}):"
 
-          line_blocks += Notion::Helpers.callout_blocks(author_line, "💬", context)
+            line_blocks += Notion::Helpers.callout_blocks(author_line, "💬", context)
 
-          # 📝 Content blocks — centralized extractor ✅
-          content_blocks, embed_blocks = Notion::Blocks.extract_blocks(line["content"], page_id, context)
+            # 📝 Content blocks — centralized extractor ✅
+            content_blocks, embed_blocks = Notion::Blocks.extract_blocks(line["content"], page_id, context)
 
-          line_blocks += content_blocks if content_blocks.any?
-          line_blocks += embed_blocks if embed_blocks.any?
+            line_blocks += content_blocks if content_blocks.any?
+            line_blocks += embed_blocks if embed_blocks.any?
 
-          # ✅ Sanitize per line
-          line_blocks = Notion::Sanitization.sanitize_blocks(line_blocks, context: context)
+            # ✅ Sanitize per line
+            line_blocks = Notion::Sanitization.sanitize_blocks(line_blocks, context: context)
 
-          # Divider
-          line_blocks << Notion::Helpers.divider_block
+            # Divider
+            line_blocks << Notion::Helpers.divider_block
 
-          blocks.concat(line_blocks)
+            blocks.concat(line_blocks)
 
-          # ✅ Progress: mark item complete
-          progress.complete_item(line["id"], project["id"], "chat")
+            # ✅ Progress: mark item complete
+            progress.complete_item(line["id"], project["id"], "chat")
+          rescue => e
+            warn "❌ Error processing chat line #{line["id"]}: #{e.class}: #{e.message}"
+            warn "  Full line content: #{line.inspect}"
+            warn "  Exception backtrace:\n#{e.backtrace.join("\n")}"
+            next
+          end
         end
 
         blocks

@@ -63,55 +63,62 @@ module Notion
           chunk.each_with_index do |doc, doc_idx|
             next unless doc
 
-            context = "Vault Document #{doc_idx + 1} of #{chunk.size}: #{doc["title"]}"
-            raw_preview = doc.to_json[0..500]
-            log "🧩 Raw Basecamp document #{doc_idx + 1}/#{chunk.size}: #{raw_preview}"
+            begin
+              context = "Vault Document #{doc_idx + 1} of #{chunk.size}: #{doc["title"]}"
+              raw_preview = doc.to_json[0..500]
+              log "🧩 Raw Basecamp document #{doc_idx + 1}/#{chunk.size}: #{raw_preview}"
 
-            # ✅ Progress: upsert item at start
-            progress.upsert_item(
-              basecamp_id: doc["id"],
-              project_basecamp_id: project["id"],
-              tool_name: "vault"
-            )
+              # ✅ Progress: upsert item at start
+              progress.upsert_item(
+                basecamp_id: doc["id"],
+                project_basecamp_id: project["id"],
+                tool_name: "vault"
+              )
 
-            item_blocks = []
+              item_blocks = []
 
-            # 📄 Title
-            item_blocks += Notion::Helpers.heading_blocks("📄 #{doc["title"]}", 3, context)
+              # 📄 Title
+              item_blocks += Notion::Helpers.heading_blocks("📄 #{doc["title"]}", 3, context)
 
-            # 👤 Creator metadata
-            creator_name = doc.dig("creator", "name") || "Unknown"
-            created_at = Notion::Utils.format_timestamp(doc["created_at"]) rescue "Unknown date"
-            item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "📄", context)
+              # 👤 Creator metadata
+              creator_name = doc.dig("creator", "name") || "Unknown"
+              created_at = Notion::Utils.format_timestamp(doc["created_at"]) rescue "Unknown date"
+              item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "📄", context)
 
-            # 🔗 App URL
-            item_blocks << Notion::Helpers.label_and_link_block("🔗", doc["app_url"], context) if doc["app_url"]
+              # 🔗 App URL
+              item_blocks << Notion::Helpers.label_and_link_block("🔗", doc["app_url"], context) if doc["app_url"]
 
-            # 📝 Content
-            if doc["content"] && !doc["content"].strip.empty?
-              content_blocks, embed_blocks = Notion::Blocks.extract_blocks(doc["content"], page_id, context)
-              item_blocks += content_blocks if content_blocks.any?
-              item_blocks += embed_blocks if embed_blocks.any?
-            end
-
-            # Final divider
-            item_blocks << Notion::Helpers.divider_block
-
-            blocks += item_blocks
-
-            # 💬 Process comments
-            if doc["comments_url"] && doc["comments_count"].to_i > 0
-              comment_blocks = fetch_and_build_comments(doc, page_id, headers, context)
-
-              if comment_blocks.any?
-                blocks += Notion::Helpers.comment_section_blocks(comment_blocks, context)
-              else
-                log "💬 No comment blocks built for vault document: #{doc["title"]} (#{context})"
+              # 📝 Content
+              if doc["content"] && !doc["content"].strip.empty?
+                content_blocks, embed_blocks = Notion::Blocks.extract_blocks(doc["content"], page_id, context)
+                item_blocks += content_blocks if content_blocks.any?
+                item_blocks += embed_blocks if embed_blocks.any?
               end
-            end
 
-            # ✅ Progress: mark item complete
-            progress.complete_item(doc["id"], project["id"], "vault")
+              # Final divider
+              item_blocks << Notion::Helpers.divider_block
+
+              blocks += item_blocks
+
+              # 💬 Process comments
+              if doc["comments_url"] && doc["comments_count"].to_i > 0
+                comment_blocks = fetch_and_build_comments(doc, page_id, headers, context)
+
+                if comment_blocks.any?
+                  blocks += Notion::Helpers.comment_section_blocks(comment_blocks, context)
+                else
+                  log "💬 No comment blocks built for vault document: #{doc["title"]} (#{context})"
+                end
+              end
+
+              # ✅ Progress: mark item complete
+              progress.complete_item(doc["id"], project["id"], "vault")
+            rescue => e
+              warn "❌ Error processing vault document #{doc["id"]}: #{e.class}: #{e.message}"
+              warn "  Full doc content: #{doc.inspect}"
+              warn "  Exception backtrace:\n#{e.backtrace.join("\n")}"
+              next
+            end
           end
 
           log "🧩 Prepared #{blocks.size} blocks for Vault Part #{index + 1}"

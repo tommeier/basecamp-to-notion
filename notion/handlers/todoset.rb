@@ -71,54 +71,61 @@ module Notion
             blocks = []
 
             chunk.each_with_index do |todo, todo_idx|
-              context = "Todo #{todo_idx + 1} of #{chunk.size}: #{todo['title']}"
-              raw_preview = todo.to_json[0..500]
-              log "🧩 Raw Basecamp todo #{todo_idx + 1}/#{chunk.size}: #{raw_preview}"
+              begin
+                context = "Todo #{todo_idx + 1} of #{chunk.size}: #{todo['title']}"
+                raw_preview = todo.to_json[0..500]
+                log "🧩 Raw Basecamp todo #{todo_idx + 1}/#{chunk.size}: #{raw_preview}"
 
-              # ✅ Progress: upsert item at start
-              progress.upsert_item(
-                basecamp_id: todo["id"],
-                project_basecamp_id: project["id"],
-                tool_name: "todoset"
-              )
+                # ✅ Progress: upsert item at start
+                progress.upsert_item(
+                  basecamp_id: todo["id"],
+                  project_basecamp_id: project["id"],
+                  tool_name: "todoset"
+                )
 
-              item_blocks = []
+                item_blocks = []
 
-              # ✅ Todo title as to-do block
-              item_blocks << {
-                object: "block",
-                type: "to_do",
-                to_do: {
-                  checked: todo["completed"],
-                  rich_text: [{ type: "text", text: { content: todo["title"] } }]
+                # ✅ Todo title as to-do block
+                item_blocks << {
+                  object: "block",
+                  type: "to_do",
+                  to_do: {
+                    checked: todo["completed"],
+                    rich_text: [{ type: "text", text: { content: todo["title"] } }]
+                  }
                 }
-              }
 
-              # ✅ Creator metadata
-              if todo["creator"]
-                creator_name = todo["creator"]["name"] || "Unknown"
-                created_at = Notion::Utils.format_timestamp(todo["created_at"]) rescue "Unknown date"
-                item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "📝", context)
+                # ✅ Creator metadata
+                if todo["creator"]
+                  creator_name = todo["creator"]["name"] || "Unknown"
+                  created_at = Notion::Utils.format_timestamp(todo["created_at"]) rescue "Unknown date"
+                  item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "📝", context)
+                end
+
+                # ✅ Description
+                if todo["description"] && !todo["description"].strip.empty?
+                  content_blocks, embed_blocks = Notion::Blocks.extract_blocks(todo["description"], page_id, context)
+
+                  item_blocks += content_blocks if content_blocks.any?
+                  item_blocks += embed_blocks if embed_blocks.any?
+                end
+
+                # ✅ App URL
+                item_blocks << Notion::Helpers.label_and_link_block("🔗", todo["app_url"], context) if todo["app_url"]
+
+                # ✅ Divider
+                item_blocks << Notion::Helpers.divider_block
+
+                blocks += item_blocks
+
+                # ✅ Progress: mark item complete
+                progress.complete_item(todo["id"], project["id"], "todoset")
+              rescue => e
+                warn "❌ Error processing todo #{todo["id"]}: #{e.class}: #{e.message}"
+                warn "  Full todo content: #{todo.inspect}"
+                warn "  Exception backtrace:\n#{e.backtrace.join("\n")}"
+                next
               end
-
-              # ✅ Description
-              if todo["description"] && !todo["description"].strip.empty?
-                content_blocks, embed_blocks = Notion::Blocks.extract_blocks(todo["description"], page_id, context)
-
-                item_blocks += content_blocks if content_blocks.any?
-                item_blocks += embed_blocks if embed_blocks.any?
-              end
-
-              # ✅ App URL
-              item_blocks << Notion::Helpers.label_and_link_block("🔗", todo["app_url"], context) if todo["app_url"]
-
-              # ✅ Divider
-              item_blocks << Notion::Helpers.divider_block
-
-              blocks += item_blocks
-
-              # ✅ Progress: mark item complete
-              progress.complete_item(todo["id"], project["id"], "todoset")
             end
 
             log "🧩 Prepared #{blocks.size} blocks for Todoset Part #{chunk_idx + 1}"

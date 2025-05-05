@@ -62,67 +62,73 @@ module Notion
 
           chunk.each_with_index do |entry, entry_idx|
             next unless entry
+            begin
+              context = "Schedule Entry #{entry_idx + 1} of #{chunk.size}: #{entry["summary"]}"
+              raw_preview = entry.to_json[0..500]
+              log "🧩 Raw Basecamp entry #{entry_idx + 1}/#{chunk.size}: #{raw_preview}"
 
-            context = "Schedule Entry #{entry_idx + 1} of #{chunk.size}: #{entry["summary"]}"
-            raw_preview = entry.to_json[0..500]
-            log "🧩 Raw Basecamp entry #{entry_idx + 1}/#{chunk.size}: #{raw_preview}"
+              # ✅ Progress: upsert item at start
+              progress.upsert_item(
+                basecamp_id: entry["id"],
+                project_basecamp_id: project["id"],
+                tool_name: "schedule"
+              )
 
-            # ✅ Progress: upsert item at start
-            progress.upsert_item(
-              basecamp_id: entry["id"],
-              project_basecamp_id: project["id"],
-              tool_name: "schedule"
-            )
+              item_blocks = []
 
-            item_blocks = []
+              # 🔥 Title heading
+              item_blocks += Notion::Helpers.heading_blocks("📅 #{entry["summary"]}", 3, context)
 
-            # 🔥 Title heading
-            item_blocks += Notion::Helpers.heading_blocks("📅 #{entry["summary"]}", 3, context)
+              # 🧩 Metadata callout: Creator + Time
+              creator_name = entry.dig("creator", "name") || "Unknown"
+              created_at = Notion::Utils.format_timestamp(entry["created_at"]) rescue "Unknown date"
+              item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "🗓️", context)
 
-            # 🧩 Metadata callout: Creator + Time
-            creator_name = entry.dig("creator", "name") || "Unknown"
-            created_at = Notion::Utils.format_timestamp(entry["created_at"]) rescue "Unknown date"
-            item_blocks += Notion::Helpers.callout_blocks("👤 Created by #{creator_name} · 🕗 #{created_at}", "🗓️", context)
-
-            # 🕒 Event timing
-            if entry["starts_at"]
-              starts_at = Notion::Utils.format_timestamp(entry["starts_at"]) rescue "Unknown start"
-              ends_at = entry["ends_at"] ? Notion::Utils.format_timestamp(entry["ends_at"]) : "Unknown end"
-              item_blocks += Notion::Helpers.callout_blocks("🕒 #{starts_at} → #{ends_at}", "📅", context)
-            end
-
-            # 📝 Description
-            if entry["description"] && !entry["description"].strip.empty?
-              desc_blocks, desc_embeds = Notion::Blocks.extract_blocks(entry["description"], page_id, context)
-              item_blocks += desc_blocks if desc_blocks.any?
-              item_blocks += desc_embeds if desc_embeds.any?
-            end
-
-            # 📍 Location
-            item_blocks << Notion::Helpers.label_and_link_block("📍 Location:", entry["location"], context) if entry["location"]&.strip != ""
-
-            # 🔗 App URL
-            item_blocks << Notion::Helpers.label_and_link_block("🔗", entry["app_url"], context) if entry["app_url"]
-
-            # ✅ Final divider
-            item_blocks << Notion::Helpers.divider_block
-
-            # Append blocks
-            blocks += item_blocks
-
-            # 💬 Process comments
-            if entry["comments_count"].to_i > 0 && entry["comments_url"]
-              comment_blocks = fetch_and_build_comments(entry, page_id, headers, context)
-
-              if comment_blocks.any?
-                blocks += Notion::Helpers.comment_section_blocks(comment_blocks, context)
-              else
-                log "💬 No comment blocks built for schedule entry: #{entry["summary"]} (#{context})"
+              # 🕒 Event timing
+              if entry["starts_at"]
+                starts_at = Notion::Utils.format_timestamp(entry["starts_at"]) rescue "Unknown start"
+                ends_at = entry["ends_at"] ? Notion::Utils.format_timestamp(entry["ends_at"]) : "Unknown end"
+                item_blocks += Notion::Helpers.callout_blocks("🕒 #{starts_at} → #{ends_at}", "📅", context)
               end
-            end
 
-            # ✅ Progress: mark item complete
-            progress.complete_item(entry["id"], project["id"], "schedule")
+              # 📝 Description
+              if entry["description"] && !entry["description"].strip.empty?
+                desc_blocks, desc_embeds = Notion::Blocks.extract_blocks(entry["description"], page_id, context)
+                item_blocks += desc_blocks if desc_blocks.any?
+                item_blocks += desc_embeds if desc_embeds.any?
+              end
+
+              # 📍 Location
+              item_blocks << Notion::Helpers.label_and_link_block("📍 Location:", entry["location"], context) if entry["location"]&.strip != ""
+
+              # 🔗 App URL
+              item_blocks << Notion::Helpers.label_and_link_block("🔗", entry["app_url"], context) if entry["app_url"]
+
+              # ✅ Final divider
+              item_blocks << Notion::Helpers.divider_block
+
+              # Append blocks
+              blocks += item_blocks
+
+              # 💬 Process comments
+              if entry["comments_count"].to_i > 0 && entry["comments_url"]
+                comment_blocks = fetch_and_build_comments(entry, page_id, headers, context)
+
+                if comment_blocks.any?
+                  blocks += Notion::Helpers.comment_section_blocks(comment_blocks, context)
+                else
+                  log "💬 No comment blocks built for schedule entry: #{entry["summary"]} (#{context})"
+                end
+              end
+
+              # ✅ Progress: mark item complete
+              progress.complete_item(entry["id"], project["id"], "schedule")
+            rescue => e
+              warn "❌ Error processing schedule entry #{entry["id"]}: #{e.class}: #{e.message}"
+              warn "  Full entry content: #{entry.inspect}"
+              warn "  Exception backtrace:\n#{e.backtrace.join("\n")}"
+              next
+            end
           end
 
           log "🧩 Prepared #{blocks.size} blocks for Schedule Part #{index + 1}"

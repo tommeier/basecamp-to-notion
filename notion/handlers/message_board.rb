@@ -68,40 +68,46 @@ module Notion
       def self.process_message_chunk(messages, parent_page_id, headers, board_title, part_number, total_parts, project, progress)
         messages.each_with_index do |msg, msg_idx|
           next unless msg
+          begin
+            context = "Message #{msg_idx + 1} of #{messages.size}: #{msg["title"]}"
+            log "📝 Creating page for #{context}"
 
-          context = "Message #{msg_idx + 1} of #{messages.size}: #{msg["title"]}"
-          log "📝 Creating page for #{context}"
+            progress.upsert_item(
+              basecamp_id: msg["id"],
+              project_basecamp_id: project["id"],
+              tool_name: "message_board"
+            )
 
-          progress.upsert_item(
-            basecamp_id: msg["id"],
-            project_basecamp_id: project["id"],
-            tool_name: "message_board"
-          )
+            message_page = Notion::Pages.create_page(
+              { "name" => format_message_title(msg, part_number, total_parts), "url" => msg["app_url"] || msg["url"] },
+              parent_page_id,
+              children: [],
+              context: "Message Page",
+              url: msg["app_url"] || msg["url"]
+            )
+            message_page_id = message_page&.dig("id")
 
-          message_page = Notion::Pages.create_page(
-            { "name" => format_message_title(msg, part_number, total_parts), "url" => msg["app_url"] || msg["url"] },
-            parent_page_id,
-            children: [],
-            context: "Message Page",
-            url: msg["app_url"] || msg["url"]
-          )
-          message_page_id = message_page&.dig("id")
+            unless message_page_id
+              warn "❌ Skipping message page: creation failed for #{context}"
+              next
+            end
 
-          unless message_page_id
-            warn "❌ Skipping message page: creation failed for #{context}"
+            log "📄 Created message page #{message_page_id} for #{context}"
+
+            blocks = build_message_blocks([msg], nil, message_page_id, board_title, headers)
+            log "🧩 Prepared #{blocks.size} blocks for #{context}"
+
+            Notion::Blocks.append_batched(message_page_id, blocks, context: context)
+
+            process_message_comments(msg, message_page_id, headers, msg_idx + 1, messages.size)
+
+            progress.complete_item(msg["id"], project["id"], "message_board")
+          rescue => e
+            warn "❌ Error processing message #{msg["id"]}: #{e.class}: #{e.message}"
+            warn "  Full message content: #{msg.inspect}"
+            warn "  Exception backtrace:\n#{e.backtrace.join("\n")}" 
             next
           end
-
-          log "📄 Created message page #{message_page_id} for #{context}"
-
-          blocks = build_message_blocks([msg], nil, message_page_id, board_title, headers)
-          log "🧩 Prepared #{blocks.size} blocks for #{context}"
-
-          Notion::Blocks.append_batched(message_page_id, blocks, context: context)
-
-          process_message_comments(msg, message_page_id, headers, msg_idx + 1, messages.size)
-
-          progress.complete_item(msg["id"], project["id"], "message_board")
         end
       end
 
