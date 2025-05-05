@@ -69,7 +69,7 @@ Basecamp no longer uses Personal Access Tokens.
 
 Instead, create an OAuth app:
 
-1. Go to: [Basecamp OAuth App Registration](https://launchpad.37signals.com/registrations/new)
+1. Go to: [Basecamp OAuth App Registration](https://integrate.37signals.com/)
 2. Register a new application:
    - Name: **Basecamp to Notion Migrator**
    - Redirect URI: `http://localhost:4567/callback`
