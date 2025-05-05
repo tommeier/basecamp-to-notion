@@ -72,6 +72,20 @@ module Notion
           end
 
           initial_count = rich_text.size
+          # Downgrade invalid links to plain text, but keep the content
+          rich_text.map! do |text_segment|
+            link_url = safe_link_url(text_segment).strip
+            if !link_url.empty? && !valid_notion_url?(link_url)
+              # Remove the link property, keep content
+              text_segment = text_segment.dup
+              if text_segment["text"].is_a?(Hash)
+                text_segment["text"] = text_segment["text"].dup
+                text_segment["text"].delete("link")
+              end
+            end
+            text_segment
+          end
+          # Remove only if both content and link are empty
           rich_text.reject! do |text_segment|
             safe_text_content(text_segment).strip.empty? && safe_link_url(text_segment).strip.empty?
           end
@@ -119,8 +133,20 @@ module Notion
       text_segment.is_a?(Hash) ? text_segment.dig("text", "content").to_s : ""
     end
 
+    # Returns the link URL if present, else blank
     def self.safe_link_url(text_segment)
       text_segment.is_a?(Hash) ? text_segment.dig("text", "link", "url").to_s : ""
+    end
+
+    # Returns true if the url is a valid Notion URL (not blank, not just protocol)
+    def self.valid_notion_url?(url)
+      return false if url.nil? || url.strip.empty?
+      uri = URI.parse(url) rescue nil
+      return false unless uri&.scheme&.match?(/^https?$/)
+      # Exclude protocol-only links (e.g., 'https://', 'http://')
+      return false if uri.host.nil? || uri.host.strip.empty?
+      # Notion also dislikes 'https://' with no host
+      true
     end
 
     def self.safe_notion_text(text)

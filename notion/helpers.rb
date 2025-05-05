@@ -86,13 +86,21 @@ module Notion
 
       debug "🧩 [label_and_link_block] Building label and link block for: #{label} #{url} (#{context})"
 
+      # Use Notion::Sanitization.valid_notion_url? to check link validity
+      link_valid = Notion::Sanitization.valid_notion_url?(url)
+      link_part = if link_valid
+        { type: "text", text: { content: url.to_s.strip, link: { url: url.to_s.strip } } }
+      else
+        { type: "text", text: { content: url.to_s.strip } } # plain text if invalid
+      end
+
       {
         object:    "block",
         type:      "paragraph",
         paragraph: {
           rich_text: [
             { type: "text", text: { content: "#{label.to_s.strip} " } },
-            { type: "text", text: { content: url.to_s.strip, link: { url: url.to_s.strip } } }
+            link_part
           ]
         }
       }
