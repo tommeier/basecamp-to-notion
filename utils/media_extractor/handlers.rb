@@ -274,6 +274,9 @@ module Utils
           blocks.concat Notion::Helpers.video_block(resolved_url, caption, context)
         elsif node['content-type'].to_s.start_with?('audio/') || resolved_url.match?(/\.(mp3|wav|m4a)(\?|$)/i)
           blocks.concat Notion::Helpers.audio_block(resolved_url, caption, context)
+        elsif resolved_url.match?(/\.(png|jpe?g|gif|webp)(\?|$)/i) || resolved_url.match?(/(opengraph\.githubassets\.com|avatars\.githubusercontent\.com)/)
+          blocks << ::Notion::Helpers.image_block(resolved_url, caption)
+          blocks += ::Notion::Helpers.text_blocks("Caption: #{caption}", context) if caption && !caption.empty?
         elsif Resolver.embeddable_media_url?(resolved_url)
           blocks << ::Notion::Helpers.image_block(resolved_url, caption)
           blocks += ::Notion::Helpers.text_blocks("Caption: #{caption}", context) if caption && !caption.empty?
