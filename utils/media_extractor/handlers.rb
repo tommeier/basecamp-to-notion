@@ -40,6 +40,12 @@ module Utils
           nested_blocks = build_nested_list_blocks(node, context, seen_nodes)
           notion_blocks.concat(nested_blocks)
           return
+        when 'table'
+          notion_blocks.concat process_table(node, context)
+          return
+        when 'details'
+          notion_blocks.concat process_details_toggle(node, context)
+          return
         end
 
         handle_node(node, context, notion_blocks, embed_blocks, seen_nodes)
@@ -94,6 +100,14 @@ module Utils
           blocks = process_quote_block(node, context)
           validate_blocks!(blocks, 'process_quote_block', node, context)
           notion_blocks.concat(blocks)
+        when 'table'
+          blocks = process_table(node, context)
+          validate_blocks!(blocks, 'process_table', node, context)
+          notion_blocks.concat(blocks)
+        when 'details'
+          blocks = process_details_toggle(node, context)
+          validate_blocks!(blocks, 'process_details_toggle', node, context)
+          notion_blocks.concat(blocks)
         when 'hr'
           notion_blocks << Helpers.divider_block
         when 'iframe'
@@ -104,21 +118,65 @@ module Utils
       end
 
       def self.process_div_or_paragraph(node, context)
+        # Return simple paragraph if purely whitespace
         return [Notion::Helpers.empty_paragraph_block] if empty_or_whitespace_div?(node)
 
-        html_str = node.inner_html
-        debug "[process_div_or_paragraph] => #{html_str.inspect} (#{context})"
-        parsed_fragment = Nokogiri::HTML.fragment(html_str)
-        rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(parsed_fragment, context)
-        return [] if rich_text.empty?
+        blocks                 = []
+        current_inline_group   = []
+        seen_nodes             = Set.new
 
-        Helpers.chunk_rich_text(rich_text).map do |chunk|
-          {
-            object: 'block',
-            type: 'paragraph',
-            paragraph: { rich_text: chunk }
-          }
+        # Local helper – converts a collected inline group to paragraph notion blocks
+        build_paragraph_blocks = lambda do |inline_nodes|
+          next if inline_nodes.empty?
+
+          inline_html      = inline_nodes.map(&:to_html).join
+          frag             = Nokogiri::HTML::DocumentFragment.parse(inline_html)
+          rich_text_spans  = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(frag, context)
+          next if rich_text_spans.empty?
+
+          Helpers.chunk_rich_text(rich_text_spans).each do |chunk|
+            blocks << {
+              object: 'block',
+              type:   'paragraph',
+              paragraph: { rich_text: chunk }
+            }
+          end
         end
+
+        node.children.each do |child|
+          # Treat application/vnd.basecamp.mention inline – keep in inline group
+          if child.element? && child.name == 'bc-attachment' && child['content-type'] != 'application/vnd.basecamp.mention'
+            # Flush any pending inline nodes before the attachment
+            build_paragraph_blocks.call(current_inline_group)
+            current_inline_group = []
+
+            # Process the attachment as its own block(s)
+            blocks.concat(process_bc_attachment(child, context))
+          # Handle nested list structures that occasionally appear inside <div>/<p>
+          elsif child.element? && %w[ul ol].include?(child.name.downcase)
+            build_paragraph_blocks.call(current_inline_group)
+            current_inline_group = []
+
+            blocks.concat(build_nested_list_blocks(child, context, seen_nodes))
+          # Handle unexpected figure or heading nodes inside div/p
+          elsif child.element? && child.name.downcase == 'figure'
+            build_paragraph_blocks.call(current_inline_group)
+            current_inline_group = []
+            blocks.concat(process_figure(child, context))
+          elsif child.element? && %w[h1 h2 h3].include?(child.name.downcase)
+            build_paragraph_blocks.call(current_inline_group)
+            current_inline_group = []
+            level = child.name[1].to_i
+            blocks.concat(process_heading_blocks(child, context, level: level))
+          else
+            current_inline_group << child
+          end
+        end
+
+        # Flush trailing inline group if present
+        build_paragraph_blocks.call(current_inline_group)
+
+        blocks.compact
       end
 
       def self.empty_or_whitespace_div?(node)
@@ -144,15 +202,23 @@ module Utils
 
           next if rich_text.empty?
 
-          block_type = list_node.name.downcase == 'ol' ? 'numbered_list_item' : 'bulleted_list_item'
+          # Detect Basecamp checklist (checkbox) pattern
+          if li_node['data-checked'] || li_node['class'].to_s.downcase.include?('checkbox') || li_node.at_css('input[type="checkbox"]')
+            block_type = 'to_do'
+            checked    = li_node['data-checked'] == 'true' || li_node.at_css('input[type="checkbox"][checked]')
+          else
+            block_type = list_node.name.downcase == 'ol' ? 'numbered_list_item' : 'bulleted_list_item'
+          end
 
           block = {
             object: 'block',
-            type: block_type,
+            type:   block_type,
             block_type.to_sym => {
-              rich_text: rich_text
+              rich_text: rich_text,
             }
           }
+
+          block[block_type.to_sym][:checked] = checked if block_type == 'to_do'
 
           nested_blocks = nested_lists.flat_map do |sublist|
             build_nested_list_blocks(sublist, context, seen_nodes)
@@ -201,7 +267,13 @@ module Utils
         if !resolved_url || Resolver.basecamp_asset_url?(resolved_url)
           return ::Notion::Helpers.basecamp_asset_fallback_blocks(resolved_url || raw_url, caption, context)
         elsif resolved_url.end_with?('.pdf')
-          return [Helpers.pdf_file_block(resolved_url, context)]
+          pdf_block = Helpers.pdf_file_block(resolved_url, context)
+          caption_blocks = caption && !caption.empty? ? Notion::Helpers.text_blocks("📄 #{caption}", context) : []
+          return [pdf_block] + caption_blocks
+        elsif node['content-type'].to_s.start_with?('video/') || resolved_url.match?(/\.(mp4|mov|webm)(\?|$)/i)
+          blocks.concat Notion::Helpers.video_block(resolved_url, caption, context)
+        elsif node['content-type'].to_s.start_with?('audio/') || resolved_url.match?(/\.(mp3|wav|m4a)(\?|$)/i)
+          blocks.concat Notion::Helpers.audio_block(resolved_url, caption, context)
         elsif Resolver.embeddable_media_url?(resolved_url)
           blocks << ::Notion::Helpers.image_block(resolved_url, caption)
           blocks += ::Notion::Helpers.text_blocks("Caption: #{caption}", context) if caption && !caption.empty?
@@ -228,13 +300,23 @@ module Utils
       def self.process_code_block(node, context)
         text = node.text.strip
         return [] if text.empty?
+
+        # Detect language from child <code> or attributes
+        lang = 'plain text'
+        code_el = node.at_css('code') || node
+        if (cls = code_el['class']) && cls.match(/language-(\w+)/)
+          lang = $1
+        elsif (data_lang = code_el['data-lang'])
+          lang = data_lang.strip
+        end
+
         rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
         return [] if rich_text.empty?
         Helpers.chunk_rich_text(rich_text).map do |chunk|
           {
             object: 'block',
             type: 'code',
-            code: { rich_text: chunk, language: 'plain text' }
+            code: { rich_text: chunk, language: lang }
           }
         end
       end
@@ -269,6 +351,52 @@ module Utils
 
       def self.inside_bc_attachment?(node)
         node.ancestors.any? { |ancestor| ancestor.name == 'bc-attachment' }
+      end
+
+      # ----------------------
+      # Table processing
+      # ----------------------
+      def self.process_table(table_node, context)
+        rows = table_node.css('tr')
+        return [] if rows.empty?
+
+        blocks = []
+        rows.each do |tr|
+          cells = tr.css('th, td').map { |c| c.text.strip }.reject(&:empty?)
+          next if cells.empty?
+
+          row_text = cells.join(" \t ") # simple tab delimiter
+          blocks.concat Notion::Helpers.text_blocks(row_text, context)
+        end
+        blocks
+      end
+
+      # ----------------------
+      # Details / summary -> toggle block
+      # ----------------------
+      def self.process_details_toggle(details_node, context)
+        summary_node = details_node.at_css('summary')
+        summary_text = summary_node&.text&.strip || 'Details'
+
+        # Remove summary from children when building body blocks
+        summary_node&.remove
+
+        body_html = details_node.inner_html.strip
+        body_blocks, _media_files, embed_blocks = ::Utils::MediaExtractor.extract_and_clean(body_html, nil, "DetailsBody #{context}")
+
+        [
+          {
+            object: 'block',
+            type:   'toggle',
+            toggle: {
+              rich_text: [{ type: 'text', text: { content: summary_text } }],
+              children:  (body_blocks + embed_blocks).compact
+            }
+          }
+        ]
+      rescue => e
+        warn "⚠️ [process_details_toggle] Error: #{e.message} (#{context})"
+        []
       end
     end
   end

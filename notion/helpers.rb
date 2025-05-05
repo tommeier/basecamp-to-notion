@@ -267,5 +267,35 @@ module Notion
         },
       }
     end
+
+    def self.audio_block(url, caption = nil, context = nil)
+      return [] unless url && !url.strip.empty?
+
+      base_block = {
+        object: 'block',
+        type:   'audio',
+        audio:  {
+          type:     'external',
+          external: { url: url }
+        }
+      }.tap { |b| debug "[audio_block] => #{b.inspect} (#{context})" }
+
+      caption && !caption.strip.empty? ? [base_block] + text_blocks("🎧 #{caption}", context) : [base_block]
+    end
+
+    def self.video_block(url, caption = nil, context = nil)
+      return [] unless url && !url.strip.empty?
+
+      base_block = {
+        object: 'block',
+        type:   'video',
+        video:  {
+          type:     'external',
+          external: { url: url }
+        }
+      }.tap { |b| debug "[video_block] => #{b.inspect} (#{context})" }
+
+      caption && !caption.strip.empty? ? [base_block] + text_blocks("🎬 #{caption}", context) : [base_block]
+    end
   end
 end

@@ -55,7 +55,7 @@ module Utils
       end
 
       def self.embeddable_media_url?(url)
-        url.match?(/(giphy\.com|youtube\.com|vimeo\.com|instagram\.com|twitter\.com)/)
+        url.match?(/(giphy\.com|youtube\.com|vimeo\.com|instagram\.com|twitter\.com|loom\.com|figma\.com|miro\.com)/)
       end
 
       def self.basecamp_asset_url?(url)
