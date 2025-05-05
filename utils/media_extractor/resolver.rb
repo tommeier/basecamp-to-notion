@@ -59,7 +59,11 @@ module Utils
       end
 
       def self.basecamp_asset_url?(url)
-        url.match?(/(basecampusercontent\.com|basecamp-static\.com|preview\.3\.basecamp\.com|storage\.3\.basecamp\.com)/)
+        # Returns true if the URL is expected to require authentication (ie. Notion cannot fetch it unauthenticated)
+        # We intentionally EXCLUDE the CDN domains which are already public (basecamp-static.com, bc3-production-assets-cdn.*)
+        # and S3 proxy hosts (basecampusercontent.com) which are usually signed, time-limited, but publicly readable.
+        # Only the preview/storage sub-domains tend to be strictly cookie-protected.
+        url.match?(/\b(preview\.3\.basecamp\.com|storage\.3\.basecamp\.com)\b/)
       end
 
       def self.basecamp_cdn_url?(url)
