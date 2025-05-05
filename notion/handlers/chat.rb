@@ -125,14 +125,27 @@ module Notion
 
             line_blocks += Notion::Helpers.callout_blocks(author_line, "💬", context)
 
-            # 📝 Content blocks — centralized extractor ✅
+            # 📝 Content blocks (HTML) — centralized extractor ✅
             content_blocks, embed_blocks = Notion::Blocks.extract_blocks(line["content"], page_id, context)
 
             line_blocks += content_blocks if content_blocks.any?
             line_blocks += embed_blocks if embed_blocks.any?
 
-            # ✅ Sanitize per line
-            line_blocks = Notion::Sanitization.sanitize_blocks(line_blocks, context: context)
+            # 📎 Attachments array (e.g., Chat::Lines::Upload)
+            attachments = line["attachments"] || []
+            if attachments.any?
+              attachments.each_with_index do |att, a_idx|
+                att_url   = att["url"] || att["download_url"]
+                att_title = att["title"] || ""
+                next unless att_url
+
+                # Reuse MediaExtractor by crafting a minimal bc-attachment fragment
+                fake_html = "<bc-attachment url=\"#{att_url}\" caption=\"#{att_title.gsub('"', '')}\"></bc-attachment>"
+                att_blocks, _, att_embeds = Notion::Blocks.extract_blocks(fake_html, page_id, "#{context} Attachment #{a_idx + 1}")
+                line_blocks += att_blocks if att_blocks.any?
+                line_blocks += att_embeds if att_embeds.any?
+              end
+            end
 
             # Divider
             line_blocks << Notion::Helpers.divider_block
