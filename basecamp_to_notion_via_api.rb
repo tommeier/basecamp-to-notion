@@ -1,17 +1,22 @@
 #!/usr/bin/env ruby
 
+require_relative "./utils/ensure_gems"
 require_relative "./config"
 require_relative "./basecamp/auth"
 require_relative "./basecamp/fetch"
 require_relative "./notion/sync"
 require_relative "./utils/cleanup"
 require_relative "./utils/logging"
+require_relative "./utils/chromedriver_setup"
+require_relative "./utils/basecamp_session"
 require_relative "./database/schema" # ✅ Ensure schema is initialized
 
 require 'zip'
 require 'fileutils'
 
 puts "🚀 Starting Basecamp → Notion sync..."
+Utils::ChromedriverSetup.ensure_driver_available
+Utils::BasecampSession.ensure_cookies!
 
 # === ✅ Global shutdown flag ===
 $shutdown = false

@@ -102,7 +102,10 @@ module Notion
         blocks = []
 
         lines.each_with_index do |line, idx|
-          next if line["content"].nil? || line["content"].strip.empty?
+          # Skip only if BOTH content and attachments are absent / empty
+          content_empty = line["content"].to_s.strip.empty?
+          attachments_empty = (line["attachments"].to_a.empty?)
+          next if content_empty && attachments_empty
 
           begin
             context = "Chat #{year} Batch #{batch_number} Line #{idx + 1}"
@@ -141,7 +144,7 @@ module Notion
 
                 # Reuse MediaExtractor by crafting a minimal bc-attachment fragment
                 fake_html = "<bc-attachment url=\"#{att_url}\" caption=\"#{att_title.gsub('"', '')}\"></bc-attachment>"
-                att_blocks, _, att_embeds = Notion::Blocks.extract_blocks(fake_html, page_id, "#{context} Attachment #{a_idx + 1}")
+                att_blocks, att_embeds = Notion::Blocks.extract_blocks(fake_html, page_id, "#{context} Attachment #{a_idx + 1}")
                 line_blocks += att_blocks if att_blocks.any?
                 line_blocks += att_embeds if att_embeds.any?
               end

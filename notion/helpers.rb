@@ -106,8 +106,15 @@ module Notion
       }
     end
 
+    MAX_NOTION_URL_LEN = 2000
+
     def self.image_block(url, context)
       return [] unless url && !url.strip.empty?
+
+      if url.length >= MAX_NOTION_URL_LEN
+        warn "⚠️ [image_block] URL length #{url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
+        return basecamp_asset_fallback_blocks(url, 'Image', context)
+      end
 
       {
         object: "block",

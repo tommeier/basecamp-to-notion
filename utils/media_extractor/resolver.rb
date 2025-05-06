@@ -2,8 +2,11 @@
 
 require 'uri'
 require 'open-uri'
+require 'net/http'
+require 'json'
 require_relative './constants'
 require_relative './logger'
+require_relative './../../utils/basecamp_session'
 
 module Utils
   module MediaExtractor
@@ -25,10 +28,39 @@ module Utils
           return original_url
         end
 
+        # Special case: private preview/storage URLs – first try direct fetch with cookies
+        if basecamp_asset_url?(url) && Utils::MediaExtractor.basecamp_headers
+          begin
+            URI.open(url, Utils::MediaExtractor.basecamp_headers) do |file|
+              final = file.base_uri.to_s rescue url
+              unless basecamp_asset_url?(final)
+                log "✅ [resolve_basecamp_url] Direct cookie fetch resolved => #{final} (#{context})"
+                @resolved_url_cache[url] = final
+                return final
+              end
+            end
+          rescue => e
+            log "⚠️ Direct cookie fetch failed: #{e.class}: #{e.message} (#{context})"
+          end
+
+          # Fallback: reuse existing browser session to follow redirects
+          if (resolved = try_browser_resolve(url, context))
+            @resolved_url_cache[url] = resolved
+            return resolved
+          end
+        end
+
         begin
           request_headers = basecamp_cdn_url?(url) ? {} : (Utils::MediaExtractor.basecamp_headers || {})
           URI.open(url, request_headers) do |file|
             final_url = file.base_uri.to_s rescue url
+
+            # If we still ended up on a private preview/storage host, try browser resolve once more
+            if basecamp_asset_url?(final_url) && (resolved = try_browser_resolve(final_url, context))
+              @resolved_url_cache[url] = resolved
+              return resolved
+            end
+
             log "✅ [resolve_basecamp_url] Resolved: #{final_url} (#{context})"
             @resolved_url_cache[url] = final_url
             return final_url
@@ -68,6 +100,30 @@ module Utils
 
       def self.basecamp_cdn_url?(url)
         url.match?(/(basecamp-static\.com|bc3-production-assets-cdn\.basecamp-static\.com)/)
+      end
+
+      # ----------------------------
+      # Helper: use existing Selenium session to follow redirects
+      # ----------------------------
+      def self.try_browser_resolve(private_url, context)
+        log "🔍 [try_browser_resolve] Using browser session for #{private_url} (#{context})"
+
+        begin
+          Utils::BasecampSession.ensure_cookies!
+          driver = Utils::BasecampSession.driver
+          return nil unless driver
+
+          driver.navigate.to(private_url)
+          Selenium::WebDriver::Wait.new(timeout: 20).until { driver.current_url != private_url }
+          final = driver.current_url
+          if final && final.match?(URI::DEFAULT_PARSER.make_regexp) && !basecamp_asset_url?(final)
+            log "✅ [try_browser_resolve] Browser redirect => #{final} (#{context})"
+            return final
+          end
+        rescue => e
+          warn "⚠️ [try_browser_resolve] Failed for #{private_url}: #{e.class}: #{e.message} (#{context})"
+        end
+        nil
       end
     end
   end
