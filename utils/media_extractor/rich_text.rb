@@ -89,8 +89,10 @@ module Utils
         end
       end
 
+      # Notion collapses inline newlines inside a paragraph; replacing <br> with a space keeps
+      # expected separation between consecutive inline elements (e.g., bold text then a link).
       def newline_span(annotations, link, context)
-        NotionSpan.new(text: "\n", annotations: annotations, link: link)
+        NotionSpan.new(text: " ", annotations: annotations, link: link)
       end
 
       def mention_span(node, annotations, link, context)

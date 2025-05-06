@@ -29,6 +29,7 @@ module Notion
       log "🔧 Runtime configuration:"
       log "  BASECAMP_ACCOUNT_ID = #{BASECAMP_ACCOUNT_ID}"
       log "  FILTER_PROJECT_LABEL = #{FILTER_PROJECT_LABEL.inspect}"
+      log "  EXCLUDE_PROJECT_LABEL = #{EXCLUDE_PROJECT_LABEL.inspect}"
       log "  FILTER_TOOL_NAME = #{FILTER_TOOL_NAME.inspect}"
       log "  INCLUDE_ARCHIVED = #{ENV["INCLUDE_ARCHIVED"] == "true"}"
       log "  RESET = #{ENV["RESET"] == "true"}"
@@ -54,10 +55,12 @@ module Notion
 
       log "📦 Total projects fetched (active + archived if enabled): #{projects.size}"
 
-      matched_projects = projects.select { |proj| proj["name"] =~ /#{FILTER_PROJECT_LABEL}/i }
+      matched_projects = projects
+      matched_projects = matched_projects.select { |p| p["name"] =~ /#{FILTER_PROJECT_LABEL}/i } if FILTER_PROJECT_LABEL && !FILTER_PROJECT_LABEL.empty?
+      matched_projects = matched_projects.reject { |p| p["name"] =~ /#{EXCLUDE_PROJECT_LABEL}/i } if EXCLUDE_PROJECT_LABEL && !EXCLUDE_PROJECT_LABEL.empty?
 
       if matched_projects.empty?
-        log "⚠️ No matching projects found with FILTER_PROJECT_LABEL=#{FILTER_PROJECT_LABEL.inspect}"
+        log "⚠️ No projects left after applying filters. FILTER_PROJECT_LABEL=#{FILTER_PROJECT_LABEL.inspect}, EXCLUDE_PROJECT_LABEL=#{EXCLUDE_PROJECT_LABEL.inspect}"
         return
       end
 
