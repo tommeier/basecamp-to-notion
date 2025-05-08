@@ -7,6 +7,7 @@ require 'json'
 require_relative './constants'
 require_relative './logger'
 require_relative './../../utils/basecamp_session'
+require_relative './../../utils/google_session'
 
 module Utils
   module MediaExtractor
@@ -14,6 +15,12 @@ module Utils
       extend ::Utils::Logging
 
       @resolved_url_cache = {}
+
+      # Prompt for Google and Basecamp sessions at startup
+      def self.ensure_sessions_at_startup!
+        Utils::BasecampSession.ensure_cookies!
+        Utils::GoogleSession.ensure_cookies!
+      end
 
       def self.resolve_basecamp_url(url, context = nil)
         return @resolved_url_cache[url] if @resolved_url_cache.key?(url)
@@ -107,18 +114,25 @@ module Utils
       # ----------------------------
       def self.try_browser_resolve(private_url, context)
         log "🔍 [try_browser_resolve] Using browser session for #{private_url} (#{context})"
-
         begin
-          Utils::BasecampSession.ensure_cookies!
-          driver = Utils::BasecampSession.driver
+          if private_url.include?("googleusercontent.com")
+            Utils::GoogleSession.ensure_cookies!
+            driver = Utils::GoogleSession.driver
+          else
+            Utils::BasecampSession.ensure_cookies!
+            driver = Utils::BasecampSession.driver
+          end
           return nil unless driver
 
           driver.navigate.to(private_url)
           Selenium::WebDriver::Wait.new(timeout: 20).until { driver.current_url != private_url }
           final = driver.current_url
-          if final && final.match?(URI::DEFAULT_PARSER.make_regexp) && !basecamp_asset_url?(final)
-            log "✅ [try_browser_resolve] Browser redirect => #{final} (#{context})"
-            return final
+          if final && final.match?(URI::DEFAULT_PARSER.make_regexp)
+            # For basecamp assets, only return if not a basecamp asset. For google, always return if changed.
+            if private_url.include?("googleusercontent.com") || !basecamp_asset_url?(final)
+              log "✅ [try_browser_resolve] Browser redirect => #{final} (#{context})"
+              return final
+            end
           end
         rescue => e
           warn "⚠️ [try_browser_resolve] Failed for #{private_url}: #{e.class}: #{e.message} (#{context})"

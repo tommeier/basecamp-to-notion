@@ -24,11 +24,14 @@ module Utils
     BC_ROOT_URL = ENV.fetch('BASECAMP_ROOT_URL', 'https://launchpad.37signals.com/signin').freeze
     WAIT_TIMEOUT = (ENV['BASECAMP_LOGIN_TIMEOUT'] || '300').to_i
 
+    @prompted = false
     class << self
       attr_reader :driver, :cookie_header
 
       def ensure_cookies!
         return @cookie_header if @cookie_header
+        return @cookie_header if @prompted
+        @prompted = true
 
         # Ensure chromedriver ready (no-op if already done)
         Utils::ChromedriverSetup.ensure_driver_available
@@ -47,7 +50,7 @@ module Utils
         log "🔐 Opening Basecamp login page: #{BC_ROOT_URL}"
         @driver.navigate.to(BC_ROOT_URL)
 
-        log "👩‍💻 Please sign in if prompted… (timeout: #{WAIT_TIMEOUT}s)"
+        log "👩‍💻 Please sign in to Basecamp if prompted… (timeout: #{WAIT_TIMEOUT}s)"
         wait_for_login!
 
         # Ensure we hit the Basecamp 3 domain so session cookies are set
@@ -65,6 +68,7 @@ module Utils
         at_exit { shutdown! }
       rescue => e
         error "❌ Basecamp session setup failed: #{e.class}: #{e.message}"
+        exit(1)
         nil
       end
 

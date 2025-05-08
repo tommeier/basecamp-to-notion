@@ -110,6 +110,12 @@ setup_database
 # === ✅ Start cleanup of old temp files
 Cleanup.run
 
+require_relative './utils/media_extractor/resolver'
+require_relative './notion/auth'
+
+Utils::MediaExtractor::Resolver.ensure_sessions_at_startup!
+Notion::Auth.token # This will prompt/login and log status
+
 # === ✅ Run main sync
 begin
   Notion::Sync.sync_projects

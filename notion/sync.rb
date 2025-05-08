@@ -18,9 +18,21 @@ module Notion
     MAX_PROJECT_THREADS = ENV.fetch("MAX_PROJECT_THREADS", "4").to_i
 
     def self.sync_projects
+      # ------------------------------------------------------------------
+      # 💳 1. Authenticate with Basecamp (OAuth) -------------------------
+      # ------------------------------------------------------------------
       log "🔄 Fetching Basecamp token..."
       token = Basecamp::Auth.token
       headers = { "Authorization" => "Bearer #{token}", "User-Agent" => "BasecampToNotionScript" }
+
+      # ------------------------------------------------------------------
+      # 🔑 2. Ensure Notion session token (token_v2) is available --------
+      # ------------------------------------------------------------------
+      notion_token = (ENV["NOTION_TOKEN_V2"] && !ENV["NOTION_TOKEN_V2"].empty?) ? ENV["NOTION_TOKEN_V2"] : (defined?(::Notion::Auth) ? ::Notion::Auth.token : nil)
+      if notion_token.nil? || notion_token.empty?
+        error "❌ Could not obtain Notion token_v2 (private API) for uploading assets. Exiting."
+        return
+      end
 
       # ✅ Set global MediaExtractor headers
       ::Utils::MediaExtractor.basecamp_headers = headers.freeze
@@ -67,7 +79,6 @@ module Notion
       log "🚀 Starting sync for #{matched_projects.size} matched project(s)..."
 
       # ✅ Thread pool with safe concurrency
-      semaphore = Mutex.new
       queue = Queue.new
       matched_projects.each_with_index { |proj, idx| queue << [proj, idx] }
 

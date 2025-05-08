@@ -129,6 +129,16 @@ module Utils
         FileUtils.mkdir_p(local_dir)
         log "🧹 [clear_local_directory] Cleared: #{local_dir}"
       end
+
+      # Returns the MIME type for a given filename, or application/octet-stream if unknown
+      def self.mime_type_for(filename)
+        require 'mime/types'
+        ext = File.extname(filename).downcase.sub('.', '')
+        return 'application/octet-stream' if ext.empty?
+        mime = MIME::Types.type_for(ext).first
+        mime ? mime.content_type : 'application/octet-stream'
+      end
+
     end
   end
 end

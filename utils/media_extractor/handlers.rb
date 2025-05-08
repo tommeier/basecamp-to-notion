@@ -6,6 +6,8 @@ require_relative './logger'
 require_relative './resolver'     # => for resolve_basecamp_url, embeddable_media_url?, basecamp_asset_url?
 require_relative './rich_text'
 require 'set'
+# New: enable private uploading for Basecamp private assets
+require_relative '../../notion/private_upload'
 
 module Utils
   module MediaExtractor
@@ -13,6 +15,11 @@ module Utils
       extend ::Utils::Logging
       extend ::Utils::MediaExtractor::Helpers
       extend ::Utils::MediaExtractor::Resolver
+
+      unless defined?(@handlers_logged)
+        log "✅ [MediaExtractor::Handlers] Image/media extraction handlers loaded and ready"
+        @handlers_logged = true
+      end
 
       SKIP_CHILDREN_NODES = ['bc-attachment']
 
@@ -264,7 +271,16 @@ module Utils
         # remove leftover text nodes
         resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
 
-        if !resolved_url || Resolver.basecamp_asset_url?(resolved_url)
+        # -----------------------------
+        # Attempt private upload if the asset is still private or unresolved
+        # -----------------------------
+        if (!resolved_url || Resolver.basecamp_asset_url?(resolved_url) || Resolver.basecamp_cdn_url?(resolved_url)) && defined?(Notion::PrivateUpload) && Notion::PrivateUpload.enabled?
+          uploaded_url = Notion::PrivateUpload.upload_from_url(raw_url, context)
+          resolved_url = uploaded_url if uploaded_url && !uploaded_url.empty?
+        end
+
+        # Fallback: if still a time-limited Basecamp URL (preview/storage or CDN) or unresolved => yellow call-out
+        if resolved_url.nil? || Resolver.basecamp_asset_url?(resolved_url) || Resolver.basecamp_cdn_url?(resolved_url)
           return ::Notion::Helpers.basecamp_asset_fallback_blocks(resolved_url || raw_url, caption, context)
         elsif resolved_url.end_with?('.pdf')
           pdf_block = Helpers.pdf_file_block(resolved_url, context)

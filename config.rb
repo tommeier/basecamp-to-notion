@@ -11,6 +11,8 @@ BASECAMP_ACCOUNT_ID    = ENV.fetch("BASECAMP_ACCOUNT_ID")
 # === NOTION CONFIG ===
 NOTION_API_KEY         = ENV.fetch("NOTION_API_KEY")
 NOTION_ROOT_PAGE_ID    = ENV.fetch("NOTION_ROOT_PAGE_ID")
+# token_v2 might be set later after browser auth; fetch lazily where needed
+NOTION_TOKEN_V2       = ENV["NOTION_TOKEN_V2"]
 
 # === FILTERS (Optional) ===
 FILTER_PROJECT_LABEL   = ENV.fetch("FILTER_PROJECT_LABEL", nil)
