@@ -19,6 +19,7 @@ require 'net/http'
 require 'uri'
 require 'json'
 require 'tempfile'
+require 'marcel'
 require_relative '../utils/media_extractor/uploader'
 require 'open-uri'
 # Removed: require_relative './auth' - Official API uses NOTION_API_TOKEN
@@ -83,6 +84,45 @@ module Notion
     module FileUpload
       extend ::Utils::Logging # For log, error, warn, debug methods
 
+      # https://developers.notion.com/docs/working-with-files-and-media#supported-file-types
+      SUPPORTED_MIME_TYPES = [
+        # Audio
+        'audio/aac',
+        'audio/midi', 'audio/x-midi',
+        'audio/mpeg',
+        'audio/ogg',
+        'audio/wav', 'audio/x-wav',
+        'audio/x-ms-wma',
+        'audio/mp4', # For m4a, m4b
+
+        # Document
+        'application/json',
+        'application/pdf',
+        'text/plain',
+
+        # Image
+        'image/gif',
+        'image/heic',
+        'image/vnd.microsoft.icon', 'image/x-icon',
+        'image/jpeg',
+        'image/png',
+        'image/svg+xml',
+        'image/tiff',
+        'image/webp',
+
+        # Video
+        'video/x-amv',
+        'video/x-ms-asf',
+        'video/x-msvideo',
+        'video/x-f4v',
+        'video/x-flv',
+        'video/mp4',
+        'video/mpeg',
+        'video/quicktime',
+        'video/x-ms-wmv',
+        'video/webm'
+      ].freeze
+
       # Core method to upload an IO stream to Notion
       # file_io is expected to be an open IO object (e.g., Tempfile, File)
       # original_filename is the desired name for the file in Notion
@@ -90,6 +130,19 @@ module Notion
       def self.upload_to_notion(file_io, original_filename, mime_type, context: nil)
         log_ctx = "[FileUpload.upload_to_notion] Context: #{context}"
         log "#{log_ctx} Starting Direct Upload for '#{original_filename}' (MIME: #{mime_type}, Size: #{file_io.size} bytes)"
+
+        file_io.rewind if file_io.respond_to?(:rewind) # Ensure IO is at the beginning for Marcel and size check
+        content_based_mime_type = Marcel::MimeType.for(file_io, name: original_filename)
+        file_io.rewind if file_io.respond_to?(:rewind) # Rewind again for actual upload
+
+        log "#{log_ctx} Initial MIME: '#{mime_type}', Marcel detected MIME: '#{content_based_mime_type}' for '#{original_filename}'"
+
+        final_mime_type = content_based_mime_type || mime_type # Prefer Marcel's detection
+
+        unless SUPPORTED_MIME_TYPES.include?(final_mime_type)
+          warn "#{log_ctx} MIME type '#{final_mime_type}' for '#{original_filename}' is not in the list of Notion supported types. Skipping upload."
+          return { success: false, file_upload_id: nil, filename: original_filename, notion_url: nil, mime_type: final_mime_type, error: "MIME type not supported by Notion API: #{final_mime_type}" }
+        end
 
         unless Notion::Uploads.enabled?
           warn "#{log_ctx} Notion uploads are disabled (NOTION_API_KEY not set). Skipping upload for '#{original_filename}'."
@@ -99,7 +152,7 @@ module Notion
         file_io.rewind if file_io.respond_to?(:rewind)
         content_length = file_io.size
 
-        start_response = Notion::API.start_file_upload(original_filename, mime_type, content_length, context: "#{context}:start_upload")
+        start_response = Notion::API.start_file_upload(original_filename, final_mime_type, content_length, context: "#{context}:start_upload")
         unless start_response[:success]
           error_message = "Failed to start file upload for '#{original_filename}'. Error: #{start_response[:error]}. Details: #{start_response[:details]}"
           error "#{log_ctx} #{error_message}"
@@ -132,20 +185,20 @@ module Notion
               temp_chunk_files << temp_chunk_file
               temp_chunk_file.write(chunk_data)
               temp_chunk_file.rewind
-              
+
               log "#{log_ctx} Sending part #{part_number}/#{start_response[:number_of_parts]} for '#{filename_for_notion}' (size: #{temp_chunk_file.size} bytes) using tempfile: #{temp_chunk_file.path}"
-              
+
               send_part_response = Notion::API.send_file_data(
                 upload_url_for_send,
                 temp_chunk_file.path,
-                mime_type,
+                final_mime_type, # Use the determined final_mime_type
                 filename_for_notion,
                 part_number: part_number,
                 context: "#{context}:send_part_#{part_number}"
               )
-              
+
               temp_chunk_file.close # Close immediately after send_file_data has read it
-              
+
               unless send_part_response[:success]
                 multi_part_error_details = "Failed to send part #{part_number} for '#{filename_for_notion}'. Error: #{send_part_response[:error]}. Details: #{send_part_response[:details]}"
                 error "#{log_ctx} #{multi_part_error_details}"
@@ -160,7 +213,7 @@ module Notion
             end
 
             # Ensure all data from file_io was read (only if all_parts_sent_successfully)
-            if file_io.eof? 
+            if file_io.eof?
               log "#{log_ctx} All parts sent for '#{filename_for_notion}'. Completing multi-part upload."
               complete_response = Notion::API.complete_multi_part_upload(file_upload_id, context: "#{context}:complete_upload")
               unless complete_response[:success]
@@ -191,7 +244,7 @@ module Notion
           end # end begin-ensure for multi-part
         else # Single-part upload
           log "#{log_ctx} Performing single-part upload for '#{filename_for_notion}'."
-          
+
           file_path_for_upload = nil
 
           if file_io.respond_to?(:path) && file_io.path && File.exist?(file_io.path)
@@ -276,7 +329,7 @@ module Notion
         tempfile = nil
         resolved_url = ::Utils::MediaExtractor::Resolver.resolve_basecamp_url(basecamp_url, context) || basecamp_url
         tempfile, mime = ::Utils::MediaExtractor::Uploader.download_with_auth(resolved_url, "#{context}:download_bc_asset")
-        
+
         unless tempfile && mime
           error "[FileUpload.upload_from_basecamp_url] Failed to download asset from #{resolved_url}. - Context: #{context}"
           return nil
@@ -329,7 +382,7 @@ module Notion
           # Use BrowserCapture for robust fetching
           tempfile, mime = ::Utils::BrowserCapture.fetch(resolved_url, driver, context: "#{context}:fetch_google_asset")
         end
-        
+
         unless tempfile && mime
           error "[FileUpload.upload_from_google_url] Failed to download asset from #{resolved_url}. - Context: #{context}"
           return nil
