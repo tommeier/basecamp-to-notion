@@ -73,7 +73,7 @@ module Utils
 
       def cookie_fetch_with_preview(url, context)
         hdrs = Utils::MediaExtractor.basecamp_headers or return nil
-        [url, preview_url_for(url)].compact.each_with_index do |target, idx|
+        [url, Resolver.preview_url_for(url)].compact.each_with_index do |target, idx|
           begin
             io  = URI.open(target, hdrs.merge('rb'))
             tmp = cache_stream(io, idx.zero? ? 'bc_cookie' : 'bc_preview')
