@@ -131,6 +131,19 @@ module Utils
       end
 
       # Returns the MIME type for a given filename, or application/octet-stream if unknown
+      IMAGE_EXTENSIONS = %w[.jpg .jpeg .png .gif .bmp .svg .webp .heic .heif].freeze
+
+      def self.image_url?(url)
+        return false if url.nil? || url.to_s.strip.empty?
+        begin
+          uri = URI.parse(url.to_s)
+          ext = File.extname(uri.path).downcase
+          IMAGE_EXTENSIONS.include?(ext)
+        rescue URI::InvalidURIError
+          false # Not a valid URL
+        end
+      end
+
       def self.mime_type_for(filename)
         require 'mime/types'
         ext = File.extname(filename).downcase.sub('.', '')

@@ -25,14 +25,6 @@ module Notion
       token = Basecamp::Auth.token
       headers = { "Authorization" => "Bearer #{token}", "User-Agent" => "BasecampToNotionScript" }
 
-      # ------------------------------------------------------------------
-      # 🔑 2. Ensure Notion session token (token_v2) is available --------
-      # ------------------------------------------------------------------
-      notion_token = (ENV["NOTION_TOKEN_V2"] && !ENV["NOTION_TOKEN_V2"].empty?) ? ENV["NOTION_TOKEN_V2"] : (defined?(::Notion::Auth) ? ::Notion::Auth.token : nil)
-      if notion_token.nil? || notion_token.empty?
-        error "❌ Could not obtain Notion token_v2 (private API) for uploading assets. Exiting."
-        return
-      end
 
       # ✅ Set global MediaExtractor headers
       ::Utils::MediaExtractor.basecamp_headers = headers.freeze

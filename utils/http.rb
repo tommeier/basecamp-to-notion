@@ -30,6 +30,114 @@ module Utils
       request_json(:get, uri, nil, headers, context: context)
     end
 
+    # form_data_params should be an array of parts, where each part is typically:
+    # [name_string, value_string] or
+    # [name_string, file_io_object, { filename: '...', content_type: '...' }]
+    def self.post_multipart_form_data(uri, form_data_params, headers = default_headers, context: nil)
+      uri = URI(uri.to_s) unless uri.is_a?(URI::HTTPS) || uri.is_a?(URI::HTTP) # Allow HTTP for local testing if ever needed
+      raise "🚫 URI is not HTTPS for production: #{uri.inspect}" if uri.is_a?(URI::HTTP) && ENV['APP_ENV'] == 'production'
+      raise "🚫 URI scheme is not HTTP/HTTPS: #{uri.inspect}" unless uri.is_a?(URI::HTTPS) || uri.is_a?(URI::HTTP)
+
+      with_retries do
+        raise Interrupt, "Shutdown during HTTP request" if $shutdown
+
+        timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
+        context_slug = (context || 'no_context').downcase.gsub(/\s+/, '_').gsub(/[^\w\-]/, '')
+        @@payload_counter += 1
+        file_dir = "./tmp/http_payloads"
+        FileUtils.mkdir_p(file_dir)
+        base_filename = "#{file_dir}/#{@@payload_counter.to_s.rjust(4, '0')}_multipart_post_#{context_slug}_#{timestamp}"
+
+        request_params_log_filename = "#{base_filename}_request_params.log"
+        
+        log_prefix = "📤 [HTTP MULTIPART POST]"
+        caller_location = caller.first
+        debug "#{log_prefix} Caller: #{caller_location}"
+
+        # Log form_data_params structure (now an array of arrays/parts)
+        logged_form_data_info = form_data_params.map do |part|
+          key = part[0]
+          value = part[1]
+          opts = part[2] if part.size > 2
+
+          value_info = if value.is_a?(File)
+            "File(path: #{value.path}, size: #{value.size rescue 'unknown'})"
+          elsif value.respond_to?(:path) && value.respond_to?(:read) # Duck-typing for IO-like objects
+            "IO-like(path: #{value.path rescue 'unknown'}, size: #{value.size rescue 'unknown'})"
+          else
+            value.to_s.truncate(100) # Truncate potentially long string values
+          end
+          
+          log_entry = "#{key}: #{value_info}"
+          log_entry += " (opts: #{opts.inspect})" if opts
+          log_entry
+        end
+        debug "#{log_prefix} Preparing request to #{uri}#{context ? " (#{context})" : ""}"
+        debug "#{log_prefix} Form data parts: #{logged_form_data_info.inspect}"
+        File.write(
+          request_params_log_filename, 
+          "URI: #{uri}\nContext: #{context}\nHeaders (excluding Authorization): #{headers.reject { |k, _| k.downcase == 'authorization' }.inspect}\nForm Data Parts:\n#{JSON.pretty_generate(logged_form_data_info)}"
+        )
+
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = (uri.scheme == 'https')
+        # http.set_debug_output($stderr) # Uncomment for deep debugging
+
+        req = Net::HTTP::Post.new(uri)
+        
+        headers.each do |k, v|
+          # Content-Type for multipart/form-data is set by set_form, so don't override from general headers.
+          req[k.to_s] = v.to_s unless k.downcase == 'content-type'
+        end
+        
+        # Pass the form_data_params array directly. 
+        # Net::HTTP::Post#set_form can handle an array of [key, val] or [key, val, opts] parts.
+        req.set_form(form_data_params, 'multipart/form-data')
+
+        start_time = Time.now
+        res = http.request(req)
+        elapsed = Time.now - start_time
+
+        body = res.body.to_s.encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
+        response_filename = "#{base_filename}_response.json"
+        debug "#{log_prefix} Response status: #{res.code} (#{elapsed.round(2)}s)"
+        debug "#{log_prefix} Saving response payload to: #{response_filename}"
+        File.write(response_filename, body)
+
+        if res.code.to_i == 429 # Too Many Requests
+          wait = (res['Retry-After'] || 5).to_i
+          jitter = rand(1..3)
+          total_wait = wait + jitter
+          error "⏳ Rate limited. Waiting #{total_wait}s (Retry-After: #{wait}s + Jitter: #{jitter}s)..."
+          sleep total_wait
+          raise "Retrying after rate limit"
+        end
+
+        unless res.code.to_i.between?(200, 299)
+          error "❌ HTTP MULTIPART POST failed#{context ? " (#{context})" : ""}:"
+          error "URL: #{uri}"
+          error "Status: #{res.code}"
+          error "Request params log: #{request_params_log_filename}"
+          error "Response payload: #{response_filename}"
+          error "Response Body snippet (first 500 chars):\n#{body[0, 500]}"
+          raise "❌ HTTP MULTIPART POST failed#{context ? " (#{context})" : ""}: URL: #{uri}, Status: #{res.code}, Body: #{body[0,500]}"
+        end
+
+        begin
+          # If body is empty but status is 2xx, it might be a valid success (e.g. 204 No Content)
+          # However, Notion's Send File Upload API returns JSON on success.
+          return { success: true, data: nil, code: res.code.to_i } if body.strip.empty? && res.code.to_i.between?(200,299)
+          JSON.parse(body)
+        rescue JSON::ParserError => e
+          error "❌ Failed to parse JSON response for MULTIPART POST to #{uri} (Status: #{res.code}): #{e.message}"
+          error "Response Body was (first 500 chars):\n#{body[0,500]}"
+          # If it's a 2xx but not JSON, it's unexpected for this specific Notion endpoint.
+          # We might want to return the raw body or a custom error hash.
+          raise "Failed to parse JSON response (Status: #{res.code}): #{e.message}. Body snippet: #{body[0,500]}"
+        end
+      end
+    end
+
     def self.request_json(method, uri, payload, headers, context: nil)
       uri = URI(uri.to_s) unless uri.is_a?(URI::HTTPS)
       raise "🚫 URI is not HTTPS: #{uri.inspect}" unless uri.is_a?(URI::HTTPS)
@@ -38,8 +146,6 @@ module Utils
       if method == :post && uri.path.include?("/blocks/") && uri.path.include?("/children")
         raise "🚫 [HTTP] Illegal POST detected for /blocks/*/children — should be PATCH! Context: #{context}, Caller: #{caller.first}"
       end
-
-      attempt = 0
 
       with_retries do
         raise Interrupt, "Shutdown during HTTP request" if $shutdown

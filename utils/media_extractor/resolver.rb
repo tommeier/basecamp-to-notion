@@ -1,5 +1,9 @@
-# utils/media_extractor/resolver.rb
-
+# frozen_string_literal: true
+#
+# Turns Basecamp “storage/preview” URLs (and Google Blob URLs) into
+# publicly‑fetchable variants.  Falls back to a headless Chrome
+# session when cookies or redirects are required.
+#
 require 'uri'
 require 'open-uri'
 require 'net/http'
@@ -14,130 +18,214 @@ module Utils
     module Resolver
       extend ::Utils::Logging
 
-      @resolved_url_cache = {}
+      # ------------------------------------------------------------------
+      # Helpers – detect & build preview URLs for expired storage links
+      # ------------------------------------------------------------------
+      DOWNLOAD_RE = %r{\Ahttps://storage\.3\.basecamp\.com/
+                       (?<acct>\d+)/blobs/(?<uuid>[0-9a-f-]+)/
+                       download/[^/?]+}xi.freeze
 
-      # Prompt for Google and Basecamp sessions at startup
-      def self.ensure_sessions_at_startup!
-        Utils::BasecampSession.ensure_cookies!
-        Utils::GoogleSession.ensure_cookies!
+      def self.preview_url_for(download_url)
+        m = DOWNLOAD_RE.match(download_url)
+        return nil unless m
+
+        "https://preview.3.basecamp.com/#{m[:acct]}/blobs/#{m[:uuid]}/previews/full"
       end
 
+      CLOUDFRONT_RE = %r{\Ahttps://.+\.cloudfront\.net/}i.freeze
+
+      def self.still_private_asset?(url)
+        url.nil? ||
+          basecamp_asset_url?(url) ||            # storage|preview hosts
+          url.match?(CLOUDFRONT_RE)              # signed CloudFront redirect
+      end
+
+      # ------------------------------------------------------------------
+      @resolved_url_cache = {}
+      @@missing_attachments = {}   # 404/410 cache so we skip next time
+
+      # Prompt for sessions as early as possible (boot hook calls this)
+      def self.ensure_sessions_at_startup!
+        log "💻 [Resolver] Starting Basecamp browser session..."
+        Utils::BasecampSession.ensure_cookies!
+
+        log "💻 [Resolver] Starting Google browser session..."
+        Utils::GoogleSession.ensure_cookies!
+
+        log "🔍 [Resolver] Browser sessions ready: "\
+            "Basecamp=#{!!Utils::BasecampSession.driver}, "\
+            "Google=#{!!Utils::GoogleSession.driver}"
+      end
+
+      # ------------------------------------------------------------------
+      # MAIN – attempts a series of increasingly heavy strategies
+      # ------------------------------------------------------------------
       def self.resolve_basecamp_url(url, context = nil)
-        return @resolved_url_cache[url] if @resolved_url_cache.key?(url)
-        unless url.is_a?(String) && url.strip.match?(URI::DEFAULT_PARSER.make_regexp)
-          error "❌ [resolve_basecamp_url] Invalid input, not a URL: #{url.inspect} (#{context})"
+        return nil                            if @@missing_attachments[url]
+        return @resolved_url_cache[url]       if @resolved_url_cache.key?(url)
+
+        unless url.is_a?(String) && url =~ URI::DEFAULT_PARSER.make_regexp
+          error "❌ [resolve_basecamp_url] Not a URL: #{url.inspect} (#{context})"
           return nil
         end
 
-        original_url = extract_original_url_from_basecamp_proxy(url)
-        if original_url
-          @resolved_url_cache[url] = original_url
-          return original_url
+        # A. Proxy wrapper? (…/redirect?u=<orig>)
+        if (orig = extract_original_url_from_basecamp_proxy(url))
+          return @resolved_url_cache[url] = orig
         end
 
-        # Special case: private preview/storage URLs – first try direct fetch with cookies
-        if basecamp_asset_url?(url) && Utils::MediaExtractor.basecamp_headers
-          begin
-            URI.open(url, Utils::MediaExtractor.basecamp_headers) do |file|
-              final = file.base_uri.to_s rescue url
-              unless basecamp_asset_url?(final)
-                log "✅ [resolve_basecamp_url] Direct cookie fetch resolved => #{final} (#{context})"
-                @resolved_url_cache[url] = final
-                return final
+        # B. Quick HEAD check for now‑deleted attachments
+        begin
+          uri = URI(url)
+          if uri.path =~ /\/attachments\/(\d+)/
+            attach_id = Regexp.last_match(1)
+            headers   = Utils::MediaExtractor.basecamp_headers || {}
+            Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') do |http|
+              res = http.request(Net::HTTP::Head.new(uri, headers))
+              if [404, 410].include?(res.code.to_i)
+                account_id = uri.path.split('/')[1]
+                json_url   = "https://3.basecampapi.com/#{account_id}/attachments/#{attach_id}.json"
+                log "🔄 404 → trying JSON API #{json_url} (#{context})"
+                begin
+                  json = URI.open(json_url, headers) { |io| JSON.parse(io.read) }
+                  if (dl = json['download_url'])
+                    log "✅ JSON API gave #{dl} (#{context})"
+                    return @resolved_url_cache[url] = dl
+                  end
+                rescue => e
+                  warn "⚠️  JSON API failed: #{e.class}: #{e.message} (#{context})"
+                end
+                warn "🚫 Attachment missing: #{url} (#{context})"
+                @@missing_attachments[url] = true
+                return nil
               end
             end
-          rescue => e
-            log "⚠️ Direct cookie fetch failed: #{e.class}: #{e.message} (#{context})"
-          end
-
-          # Fallback: reuse existing browser session to follow redirects
-          if (resolved = try_browser_resolve(url, context))
-            @resolved_url_cache[url] = resolved
-            return resolved
-          end
-        end
-
-        begin
-          request_headers = basecamp_cdn_url?(url) ? {} : (Utils::MediaExtractor.basecamp_headers || {})
-          URI.open(url, request_headers) do |file|
-            final_url = file.base_uri.to_s rescue url
-
-            # If we still ended up on a private preview/storage host, try browser resolve once more
-            if basecamp_asset_url?(final_url) && (resolved = try_browser_resolve(final_url, context))
-              @resolved_url_cache[url] = resolved
-              return resolved
-            end
-
-            log "✅ [resolve_basecamp_url] Resolved: #{final_url} (#{context})"
-            @resolved_url_cache[url] = final_url
-            return final_url
           end
         rescue => e
-          error "❌ [resolve_basecamp_url] Failed to resolve: #{url} (#{context}) — #{e.message}"
+          warn "⚠️  HEAD check failed: #{e.class}: #{e.message} (#{context})"
+        end
+
+        # C. For any private Basecamp asset (storage/preview hosts), **always**
+        #    use the headless‑browser flow.  No more cookie‑driven `open-uri`
+        #    fetches – they are brittle and leak cookies in multi‑threaded
+        #    jobs.  The browser session already has the right cookies loaded,
+        #    so let it do the heavy lifting.
+        if basecamp_asset_url?(url)
+          if (resolved = try_browser_resolve(url, context))
+            return @resolved_url_cache[url] = resolved
+          end
+          warn "🚫 Browser failed to resolve #{url} (#{context})"
+          @resolved_url_cache[url] = nil
+          return nil
+        end
+
+        # D. Plain open – handles already‑public CDN links or non‑Basecamp URLs
+        begin
+          hdrs = basecamp_cdn_url?(url) ? {} : (Utils::MediaExtractor.basecamp_headers || {})
+          URI.open(url, hdrs) do |f|
+            final = f.base_uri.to_s rescue url
+            log "✅ Resolved: #{final} (#{context})"
+            return @resolved_url_cache[url] = final
+          end
+        rescue => e
+          error "❌ Could not resolve #{url} (#{context}) — #{e.message}"
           @resolved_url_cache[url] = nil
           nil
         end
       end
 
-      def self.extract_original_url_from_basecamp_proxy(basecamp_url)
-        return unless basecamp_url.is_a?(String) && basecamp_url.strip != ""
+      # ------------------------------------------------------------------
+      # try_browser_resolve – **unchanged**
+      # ------------------------------------------------------------------
+      def self.try_browser_resolve(private_url, context)
+        log "🔍 [try_browser_resolve] Using browser session for #{private_url} (#{context})"
+        begin
+          is_google_url = private_url.include?("googleusercontent.com") ||
+                          private_url.include?("usercontent.google.com")
 
+          if is_google_url
+            # GoogleSession handles its own synchronization internally for driver access and navigation
+            # The driver method ensures cookies and returns an initialized driver.
+            driver = Utils::GoogleSession.driver
+            return nil unless driver
+
+            # Special handling for Google 403 loops
+            max_retries   = 3
+            retries       = 0
+            random_sleep  = -> { sleep(1 + rand * 2) }
+
+            while retries < max_retries
+              random_sleep[]
+              # navigate_to is synchronized internally in GoogleSession
+              unless Utils::GoogleSession.navigate_to(private_url)
+                warn "⚠️  Google navigate failed (attempt #{retries + 1})"
+                return nil if (retries += 1) >= max_retries
+                next
+              end
+
+              if driver.page_source.include?("403. That's an error") ||
+                 driver.page_source.include?("Your client does not have permission")
+                warn "⚠️  Google 403 detected (attempt #{retries + 1})"
+                return nil if (retries += 1) >= max_retries
+              else
+                break
+              end
+            end
+            # Wait up to 20s for a redirect (specific to Google flow here)
+            Selenium::WebDriver::Wait.new(timeout: 20).until { driver.current_url != private_url }
+            final = driver.current_url
+
+          else # It's a Basecamp URL, use with_driver for synchronized access
+            final_url_from_bc = nil
+            Utils::BasecampSession.with_driver do |bc_driver|
+              return nil unless bc_driver # Should not happen if with_driver is correct
+
+              bc_driver.navigate.to(private_url)
+              # Wait up to 20s for a redirect
+              Selenium::WebDriver::Wait.new(timeout: 20).until { bc_driver.current_url != private_url }
+              final_url_from_bc = bc_driver.current_url
+            end
+            final = final_url_from_bc
+          end
+
+
+
+
+          if final && final =~ URI::DEFAULT_PARSER.make_regexp
+            if is_google_url || !basecamp_asset_url?(final)
+              log "✅ [try_browser_resolve] Redirect → #{final} (#{context})"
+              return final
+            end
+          end
+        rescue => e
+          warn "⚠️ [try_browser_resolve] Failed: #{e.class}: #{e.message} (#{context})"
+        end
+        nil
+      end
+
+      # ------------------------------------------------------------------
+      # Helper predicates & util methods
+      # ------------------------------------------------------------------
+      def self.extract_original_url_from_basecamp_proxy(basecamp_url)
         uri = URI(basecamp_url)
         return unless uri.query
-
         params = URI.decode_www_form(uri.query).to_h
-        original_url = params['u'] || params['url']
-        original_url if original_url&.match?(URI.regexp(%w[http https]))
-      rescue URI::InvalidURIError => e
-        error "❌ [extract_original_url_from_basecamp_proxy] Invalid URI: #{basecamp_url.inspect} — #{e.message}"
+        orig   = params['u'] || params['url']
+        orig if orig&.match?(URI.regexp(%w[http https]))
+      rescue URI::InvalidURIError
         nil
       end
 
       def self.embeddable_media_url?(url)
-        url.match?(/(giphy\.com|youtube\.com|vimeo\.com|instagram\.com|twitter\.com|loom\.com|figma\.com|miro\.com)/)
+        url.match?(/(giphy|youtube|vimeo|instagram|twitter|loom|figma|miro)\.com/i)
       end
 
       def self.basecamp_asset_url?(url)
-        # Returns true if the URL is expected to require authentication (ie. Notion cannot fetch it unauthenticated)
-        # We intentionally EXCLUDE the CDN domains which are already public (basecamp-static.com, bc3-production-assets-cdn.*)
-        # and S3 proxy hosts (basecampusercontent.com) which are usually signed, time-limited, but publicly readable.
-        # Only the preview/storage sub-domains tend to be strictly cookie-protected.
         url.match?(/\b(preview\.3\.basecamp\.com|storage\.3\.basecamp\.com)\b/)
       end
 
       def self.basecamp_cdn_url?(url)
         url.match?(/(basecamp-static\.com|bc3-production-assets-cdn\.basecamp-static\.com)/)
-      end
-
-      # ----------------------------
-      # Helper: use existing Selenium session to follow redirects
-      # ----------------------------
-      def self.try_browser_resolve(private_url, context)
-        log "🔍 [try_browser_resolve] Using browser session for #{private_url} (#{context})"
-        begin
-          if private_url.include?("googleusercontent.com")
-            Utils::GoogleSession.ensure_cookies!
-            driver = Utils::GoogleSession.driver
-          else
-            Utils::BasecampSession.ensure_cookies!
-            driver = Utils::BasecampSession.driver
-          end
-          return nil unless driver
-
-          driver.navigate.to(private_url)
-          Selenium::WebDriver::Wait.new(timeout: 20).until { driver.current_url != private_url }
-          final = driver.current_url
-          if final && final.match?(URI::DEFAULT_PARSER.make_regexp)
-            # For basecamp assets, only return if not a basecamp asset. For google, always return if changed.
-            if private_url.include?("googleusercontent.com") || !basecamp_asset_url?(final)
-              log "✅ [try_browser_resolve] Browser redirect => #{final} (#{context})"
-              return final
-            end
-          end
-        rescue => e
-          warn "⚠️ [try_browser_resolve] Failed for #{private_url}: #{e.class}: #{e.message} (#{context})"
-        end
-        nil
       end
     end
   end

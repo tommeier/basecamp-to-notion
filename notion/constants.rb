@@ -14,6 +14,7 @@ module Notion
   MAX_NOTION_TEXT_LENGTH = 2000 # Safety for individual text lengths
   MAX_BLOCKS_PER_TOOL_PAGE = 800 # Safety cap below hard ~1000 limit
   MAX_BLOCKS_PER_PAGE_CREATION = 100 # Page creation limit
+  HOSTED_FILE_URL_PREFIX = "https://prod-files-secure.s3".freeze # Prefix for Notion's S3 hosted files
 
   # ✅ Important: count system-level blocks added at page creation
   # - Migration banner: ✅ 1 block

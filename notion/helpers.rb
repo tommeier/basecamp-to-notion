@@ -108,35 +108,74 @@ module Notion
 
     MAX_NOTION_URL_LEN = 2000
 
-    def self.image_block(url, context)
+    def self.image_block(url, caption = nil, context = nil)
       return [] unless url && !url.strip.empty?
 
       if url.length >= MAX_NOTION_URL_LEN
         warn "⚠️ [image_block] URL length #{url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
-        return basecamp_asset_fallback_blocks(url, 'Image', context)
+        return basecamp_asset_fallback_blocks(url, caption || 'Image', context)
       end
 
-      {
-        object: "block",
-        type:   "image",
-        image:  {
-          type:     "external",
-          external: { url: url }
-        }
-      }.tap { |block| debug "[image_block] => #{block.inspect} (#{context})" }
+      payload = { type: "external", external: { url: url } }
+      if caption && !caption.strip.empty?
+        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      end
+
+      block = { object: "block", type: "image", image: payload }
+      [block].tap { |b_arr| debug "[image_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
     end
 
-    def self.pdf_file_block(url, context)
+    def self.pdf_file_block(url, caption = nil, context = nil)
       return [] unless url && !url.strip.empty?
 
-      {
-        object: "block",
-        type:   "file",
-        file:   {
-          type:     "external",
-          external: { url: url }
-        }
-      }.tap { |block| debug "[pdf_file_block] => #{block.inspect} (#{context})" }
+      if url.length >= MAX_NOTION_URL_LEN
+        warn "⚠️ [pdf_file_block] URL length #{url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
+        return basecamp_asset_fallback_blocks(url, caption || 'PDF Document', context)
+      end
+
+      payload = { type: "external", external: { url: url } }
+      if caption && !caption.strip.empty?
+        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      end
+
+      block = { object: "block", type: "pdf", pdf: payload }
+      [block].tap { |b_arr| debug "[pdf_file_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
+    end
+
+    def self.audio_block(url, caption = nil, context = nil)
+      return [] unless url && !url.strip.empty?
+
+      payload = { type: "external", external: { url: url } }
+      if caption && !caption.strip.empty?
+        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      end
+
+      block = { object: "block", type: "audio", audio: payload }
+      [block].tap { |b_arr| debug "[audio_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
+    end
+
+    def self.video_block(url, caption = nil, context = nil)
+      return [] unless url && !url.strip.empty?
+
+      payload = { type: "external", external: { url: url } }
+      if caption && !caption.strip.empty?
+        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      end
+
+      block = { object: "block", type: "video", video: payload }
+      [block].tap { |b_arr| debug "[video_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
+    end
+
+    def self.embed_block(url, caption = nil, context = nil)
+      return [] unless url && !url.strip.empty?
+
+      payload = { url: url }
+      if caption && !caption.strip.empty?
+        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      end
+
+      block = { object: "block", type: "embed", embed: payload }
+      [block].tap { |b_arr| debug "[embed_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
     end
 
     def self.empty_paragraph_block
@@ -273,36 +312,6 @@ module Notion
           color: "blue_background"
         },
       }
-    end
-
-    def self.audio_block(url, caption = nil, context = nil)
-      return [] unless url && !url.strip.empty?
-
-      base_block = {
-        object: 'block',
-        type:   'audio',
-        audio:  {
-          type:     'external',
-          external: { url: url }
-        }
-      }.tap { |b| debug "[audio_block] => #{b.inspect} (#{context})" }
-
-      caption && !caption.strip.empty? ? [base_block] + text_blocks("🎧 #{caption}", context) : [base_block]
-    end
-
-    def self.video_block(url, caption = nil, context = nil)
-      return [] unless url && !url.strip.empty?
-
-      base_block = {
-        object: 'block',
-        type:   'video',
-        video:  {
-          type:     'external',
-          external: { url: url }
-        }
-      }.tap { |b| debug "[video_block] => #{b.inspect} (#{context})" }
-
-      caption && !caption.strip.empty? ? [base_block] + text_blocks("🎬 #{caption}", context) : [base_block]
     end
   end
 end

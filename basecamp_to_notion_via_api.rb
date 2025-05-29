@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require_relative "./utils/dependencies"
 require_relative "./utils/ensure_gems"
 require_relative "./config"
 require_relative "./basecamp/auth"
@@ -15,6 +16,9 @@ require 'zip'
 require 'fileutils'
 
 puts "🚀 Starting Basecamp → Notion sync..."
+
+Utils::Dependencies.ensure_imagemagick   # makes `identify` available or logs a warning
+
 Utils::ChromedriverSetup.ensure_driver_available
 Utils::BasecampSession.ensure_cookies!
 
@@ -110,11 +114,17 @@ setup_database
 # === ✅ Start cleanup of old temp files
 Cleanup.run
 
+# === ✅ Ensure NOTION_API_KEY is set for official API usage ===
+unless ENV['NOTION_API_KEY'] && !ENV['NOTION_API_KEY'].empty?
+  puts "❌ ERROR: NOTION_API_KEY environment variable is not set."
+  puts "Please set it in your .env file with your Notion integration token."
+  exit 1
+end
+puts "✅ NOTION_API_KEY found."
+
 require_relative './utils/media_extractor/resolver'
-require_relative './notion/auth'
 
 Utils::MediaExtractor::Resolver.ensure_sessions_at_startup!
-Notion::Auth.token # This will prompt/login and log status
 
 # === ✅ Run main sync
 begin

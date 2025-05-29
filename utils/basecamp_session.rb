@@ -11,6 +11,8 @@
 # fresh. On exit, the driver is quit automatically.
 
 require 'timeout'
+require 'thread' # For Mutex
+require 'fileutils' # For creating directories
 require_relative './logging'
 require_relative './chromedriver_setup'
 
@@ -20,18 +22,41 @@ module Utils
 
     @cookie_header = nil
     @driver = nil
+    @session_mutex = Mutex.new
+    @shutdown_hook_set = false # To ensure at_exit is only set once
 
     BC_ROOT_URL = ENV.fetch('BASECAMP_ROOT_URL', 'https://launchpad.37signals.com/signin').freeze
     WAIT_TIMEOUT = (ENV['BASECAMP_LOGIN_TIMEOUT'] || '300').to_i
+    SELENIUM_DOWNLOAD_DIR = File.expand_path('../../tmp/selenium_browser_downloads', __dir__)
 
     @prompted = false
     class << self
-      attr_reader :driver, :cookie_header
+      attr_reader :cookie_header # driver will be accessed via with_driver
+
+      def driver
+        # Direct access to @driver is discouraged; use with_driver for safety.
+        # This getter is kept for minimal disruption if some internal/legacy code still uses it,
+        # but it should be used only within a @session_mutex.synchronize block.
+        @driver
+      end
 
       def ensure_cookies!
-        return @cookie_header if @cookie_header
-        return @cookie_header if @prompted
-        @prompted = true
+        # Fast path: already initialized and driver is present
+        return @cookie_header if @cookie_header && @driver
+
+        @session_mutex.synchronize do
+          # Double-check inside mutex: another thread might have completed initialization
+          return @cookie_header if @cookie_header && @driver
+
+          # If @driver is nil, we are the first thread to initialize or re-initialize.
+          # @prompted helps to avoid re-showing user prompts if initialization was partial or failed before.
+          # However, the main gate is @driver being nil.
+
+          if @prompted && !@driver
+            log "🔁 Basecamp session was prompted but driver not fully initialized. Retrying setup."
+          end
+
+          @prompted = true # Indicate that initialization process has started/been attempted
 
         # Ensure chromedriver ready (no-op if already done)
         Utils::ChromedriverSetup.ensure_driver_available
@@ -44,6 +69,15 @@ module Utils
         options.add_argument("--user-data-dir=#{profile_dir}")
         options.add_argument('--profile-directory=Default')
         options.add_argument('--headless=new') if ENV['HEADLESS'] == '1'
+
+        # Configure custom download directory for Selenium browser
+        FileUtils.mkdir_p(SELENIUM_DOWNLOAD_DIR) unless Dir.exist?(SELENIUM_DOWNLOAD_DIR)
+        prefs = {
+          'download.default_directory' => SELENIUM_DOWNLOAD_DIR,
+          'download.prompt_for_download' => false,
+          'directory_upgrade' => true
+        }
+        options.add_preference(:download, prefs)
 
         @driver = Selenium::WebDriver.for(:chrome, options: options)
 
@@ -64,17 +98,32 @@ module Utils
         log "✅ Basecamp cookies captured & applied to MediaExtractor"
         @cookie_header
 
-        # Ensure browser closes when script exits
-        at_exit { shutdown! }
+          # Ensure browser closes when script exits - only set this hook once
+          unless @shutdown_hook_set
+            at_exit { shutdown! }
+            @shutdown_hook_set = true
+          end
+        end # End of @session_mutex.synchronize block for initialization
+        @cookie_header # Return cookie_header, which should be set if successful
       rescue => e
         error "❌ Basecamp session setup failed: #{e.class}: #{e.message}"
         exit(1)
         nil
       end
 
+      def with_driver(&block)
+        ensure_cookies! # Ensure session is initialized
+        @session_mutex.synchronize do
+          raise "Basecamp driver not initialized or setup failed. Cannot yield driver." unless @driver
+          yield @driver
+        end
+      end
+
       def shutdown!
-        @driver&.quit
-        @driver = nil
+        @session_mutex.synchronize do
+          @driver&.quit
+          @driver = nil
+        end
       rescue => e
         warn "⚠️ Error closing browser: #{e.message}"
       end
