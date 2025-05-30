@@ -39,6 +39,7 @@ module Utils
 
       notion_blocks = []
       embed_blocks = [] # Note: embed_blocks are populated within handle_node_recursive
+      failed_attachments_details = [] # To collect details of attachments that failed processing
       current_inline_group = []
 
       doc = Nokogiri::HTML::DocumentFragment.parse(text)
@@ -57,7 +58,8 @@ module Utils
             context,
             parent_page_id,
             notion_blocks, # Pass arrays to be populated
-            embed_blocks
+            embed_blocks,
+            failed_attachments_details # Add missing argument
           )
         else
           # Add inline or text node to the current group

@@ -12,19 +12,21 @@ module Notion
   module Blocks
     extend ::Utils::Logging
 
-    MAX_BLOCKS_PER_REQUEST = 100
-    MAX_PAYLOAD_BYTES = 700_000
-    MAX_CHILDREN_PER_BLOCK = 50
+    # MAX_BLOCKS_PER_REQUEST, MAX_PAYLOAD_BYTES, and MAX_CHILDREN_PER_BLOCK
+    # are now defined in config.rb and loaded from environment variables.
+    # They are available as top-level constants: 
+    # ::NOTION_BATCH_MAX_BLOCKS, ::MAX_NOTION_PAYLOAD_BYTES, ::MAX_CHILDREN_PER_BLOCK
 
     def self.extract_blocks(html, parent_page_id, context)
       notion_blocks = []
       embed_blocks = []
+      failed_attachments_details = []
 
       doc = Nokogiri::HTML::DocumentFragment.parse(html)
 
       doc.children.each do |child|
         next unless child.element?
-        ::Utils::MediaExtractor::Handlers.handle_node_recursive(child, context, parent_page_id, notion_blocks, embed_blocks)
+        ::Utils::MediaExtractor::Handlers.handle_node_recursive(child, context, parent_page_id, notion_blocks, embed_blocks, failed_attachments_details)
       end
 
       [notion_blocks.compact, embed_blocks.compact]
@@ -70,16 +72,18 @@ module Notion
         debug "    [block #{idx}] type='#{block["type"]}', size=#{block_size} bytes, children=#{children_count}"
       end
 
-      # Split large children
-      blocks = split_large_blocks(blocks, MAX_PAYLOAD_BYTES, MAX_CHILDREN_PER_BLOCK, context)
+      # Split large children (blocks with too many internal children).
+      # This uses ::MAX_CHILDREN_PER_BLOCK from config.rb for splitting criteria.
+      # The ::MAX_NOTION_PAYLOAD_BYTES argument is passed but not used by split_large_blocks for its splitting logic.
+      blocks = split_large_blocks(blocks, ::MAX_CHILDREN_PER_BLOCK, context)
 
       # Split by payload size
-      payload_batches = split_blocks_by_payload_size(blocks, MAX_PAYLOAD_BYTES)
+      payload_batches = split_blocks_by_payload_size(blocks, ::MAX_NOTION_PAYLOAD_BYTES)
       log "🧩 [append] Payload-split into #{payload_batches.size} groups (#{context})"
 
-      # Enforce max 100 blocks per request
-      final_batches = payload_batches.flat_map { |batch| batch.each_slice(MAX_BLOCKS_PER_REQUEST).to_a }
-      log "🧩 [append] Final sliced into #{final_batches.size} batches (#{context})"
+      # Enforce max blocks per request
+      final_batches = payload_batches.flat_map { |batch| batch.each_slice(::NOTION_BATCH_MAX_BLOCKS).to_a }
+      log "🧩 [append] Final sliced into #{final_batches.size} batches (max #{::NOTION_BATCH_MAX_BLOCKS} blocks per batch) (#{context})"
 
       final_batches.each_with_index do |block_slice, idx|
         next if block_slice.nil? || block_slice.empty? || block_slice.all? { |b| !b.is_a?(Hash) || b["type"].nil? }
@@ -90,7 +94,7 @@ module Notion
           if block["children"].is_a?(Array)
             before = block["children"].size
             block["children"].compact!
-            block["children"].reject! { |child| child.nil? || !child.is_a?(Hash) || child.empty? || child["type"].nil? }
+            block["children"].reject! { |child| !child.is_a?(Hash) || child.empty? || child["type"].nil? }
             after = block["children"].size
             removed = before - after
             log "🧹 [append] Cleaned children for block #{block_idx}: removed #{removed} invalid children" if removed > 0
@@ -99,6 +103,18 @@ module Notion
 
         valid_block_count, invalid_block_count = BlockValidator.validate_blocks(block_slice, context)
         log "🧩 [append] Block validation: #{valid_block_count} valid, #{invalid_block_count} invalid"
+
+        # Filter out blocks that don't pass basic validation before sending to API
+        # BlockValidator.valid_block? checks if it's a Hash and has a 'type' key.
+        original_count = block_slice.size
+        block_slice.select! { |block| ::BlockValidator.valid_block?(block) }
+        filtered_count = block_slice.size
+        if original_count != filtered_count
+          log "🗑️ [append] Removed #{original_count - filtered_count} invalid blocks from batch before sending. Original: #{original_count}, Final: #{filtered_count}"
+        end
+
+        # Re-check if block_slice is empty after filtering, as it might now be.
+        next if block_slice.empty?
 
         payload = { children: block_slice }
         debug "📦 [append] Final payload size: #{JSON.generate(payload).bytesize} bytes"
@@ -122,26 +138,35 @@ module Notion
 
     def self.split_blocks_by_payload_size(blocks, max_bytes)
       batches = []
+      return batches if blocks.empty?
+
       current_batch = []
-      current_size = 0
 
       blocks.each do |block|
-        size = estimate_block_size(block)
-        if current_size + size > max_bytes
-          batches << current_batch unless current_batch.empty?
-          current_batch = []
-          current_size = 0
-        end
+        # Calculate the prospective size if this block were added to the current_batch
+        prospective_payload_for_check = { children: current_batch + [block] }
+        estimated_size_if_added = JSON.generate(prospective_payload_for_check).bytesize
 
-        current_batch << block
-        current_size += size
+        if !current_batch.empty? && estimated_size_if_added > max_bytes
+          # The current block would make the current_batch + block too large.
+          # Finalize the current_batch (without this block) and add it to batches.
+          batches << current_batch
+          # Start a new batch with the current block.
+          current_batch = [block]
+        else
+          # It's safe to add this block to the current_batch (either it fits, or current_batch is empty).
+          # If current_batch is empty, this block starts a new batch, regardless of its individual size here.
+          # An individual block exceeding max_bytes will form its own batch, to be potentially caught by HTTP layer.
+          current_batch << block
+        end
       end
 
+      # Add the last remaining batch if it's not empty
       batches << current_batch unless current_batch.empty?
       batches
     end
 
-    def self.split_large_blocks(blocks, max_payload_bytes, max_children_per_block, context = nil)
+    def self.split_large_blocks(blocks, max_children_per_block, context = nil)
       split_blocks = []
 
       blocks.each_with_index do |block, idx|

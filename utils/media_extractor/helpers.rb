@@ -132,6 +132,9 @@ module Utils
 
       # Returns the MIME type for a given filename, or application/octet-stream if unknown
       IMAGE_EXTENSIONS = %w[.jpg .jpeg .png .gif .bmp .svg .webp .heic .heif].freeze
+      PDF_EXTENSIONS = %w[.pdf].freeze
+      VIDEO_EXTENSIONS = %w[.mp4 .mov .avi .wmv .flv .mkv .webm].freeze # Common video types
+      AUDIO_EXTENSIONS = %w[.mp3 .wav .aac .ogg .m4a .flac].freeze # Common audio types
 
       def self.image_url?(url)
         return false if url.nil? || url.to_s.strip.empty?
@@ -139,6 +142,39 @@ module Utils
           uri = URI.parse(url.to_s)
           ext = File.extname(uri.path).downcase
           IMAGE_EXTENSIONS.include?(ext)
+        rescue URI::InvalidURIError
+          false # Not a valid URL
+        end
+      end
+
+      def self.pdf_url?(url)
+        return false if url.nil? || url.to_s.strip.empty?
+        begin
+          uri = URI.parse(url.to_s)
+          ext = File.extname(uri.path).downcase
+          PDF_EXTENSIONS.include?(ext)
+        rescue URI::InvalidURIError
+          false # Not a valid URL
+        end
+      end
+
+      def self.video_url?(url)
+        return false if url.nil? || url.to_s.strip.empty?
+        begin
+          uri = URI.parse(url.to_s)
+          ext = File.extname(uri.path).downcase
+          VIDEO_EXTENSIONS.include?(ext)
+        rescue URI::InvalidURIError
+          false # Not a valid URL
+        end
+      end
+
+      def self.audio_url?(url)
+        return false if url.nil? || url.to_s.strip.empty?
+        begin
+          uri = URI.parse(url.to_s)
+          ext = File.extname(uri.path).downcase
+          AUDIO_EXTENSIONS.include?(ext)
         rescue URI::InvalidURIError
           false # Not a valid URL
         end

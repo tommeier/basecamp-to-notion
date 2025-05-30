@@ -108,58 +108,113 @@ module Notion
 
     MAX_NOTION_URL_LEN = 2000
 
-    def self.image_block(url, caption = nil, context = nil)
+    def self.image_block(url, caption_input = nil, context = nil)
       return [] unless url && !url.strip.empty?
+      cleaned_url = url.to_s.strip # Ensure it's a string and stripped
 
-      if url.length >= MAX_NOTION_URL_LEN
-        warn "⚠️ [image_block] URL length #{url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
-        return basecamp_asset_fallback_blocks(url, caption || 'Image', context)
+      if cleaned_url.length >= MAX_NOTION_URL_LEN
+        warn "⚠️ [image_block] URL length #{cleaned_url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
+        # Determine a string caption for the fallback
+        fallback_caption_text = 'Image'
+        if caption_input.is_a?(Array) && caption_input.first&.dig(:text, :content)
+          fallback_caption_text = caption_input.first[:text][:content]
+        elsif caption_input.is_a?(String)
+          fallback_caption_text = caption_input
+        end
+        return basecamp_asset_fallback_blocks(cleaned_url, fallback_caption_text, context)
       end
 
-      payload = { type: "external", external: { url: url } }
-      if caption && !caption.strip.empty?
-        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      payload = { type: "external", external: { url: cleaned_url } }
+      if caption_input
+        if caption_input.is_a?(Array) && caption_input.all? { |item| item.is_a?(Hash) }
+          payload[:caption] = caption_input unless caption_input.empty?
+        elsif caption_input.is_a?(String) && !caption_input.strip.empty?
+          payload[:caption] = [{ type: "text", text: { content: caption_input.strip } }]
+        end
       end
 
       block = { object: "block", type: "image", image: payload }
       [block].tap { |b_arr| debug "[image_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
     end
 
-    def self.pdf_file_block(url, caption = nil, context = nil)
+    def self.pdf_file_block(url, caption_input = nil, context = nil)
       return [] unless url && !url.strip.empty?
+      cleaned_url = url.to_s.strip
 
-      if url.length >= MAX_NOTION_URL_LEN
-        warn "⚠️ [pdf_file_block] URL length #{url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
-        return basecamp_asset_fallback_blocks(url, caption || 'PDF Document', context)
+      if cleaned_url.length >= MAX_NOTION_URL_LEN
+        warn "⚠️ [pdf_file_block] URL length #{cleaned_url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
+        fallback_caption_text = 'PDF Document'
+        if caption_input.is_a?(Array) && caption_input.first&.dig(:text, :content)
+          fallback_caption_text = caption_input.first[:text][:content]
+        elsif caption_input.is_a?(String)
+          fallback_caption_text = caption_input
+        end
+        return basecamp_asset_fallback_blocks(cleaned_url, fallback_caption_text, context)
       end
 
-      payload = { type: "external", external: { url: url } }
-      if caption && !caption.strip.empty?
-        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      payload = { type: "external", external: { url: cleaned_url } }
+      if caption_input
+        if caption_input.is_a?(Array) && caption_input.all? { |item| item.is_a?(Hash) }
+          payload[:caption] = caption_input unless caption_input.empty?
+        elsif caption_input.is_a?(String) && !caption_input.strip.empty?
+          payload[:caption] = [{ type: "text", text: { content: caption_input.strip } }]
+        end
       end
 
       block = { object: "block", type: "pdf", pdf: payload }
       [block].tap { |b_arr| debug "[pdf_file_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
     end
 
-    def self.audio_block(url, caption = nil, context = nil)
+    def self.audio_block(url, caption_input = nil, context = nil)
       return [] unless url && !url.strip.empty?
+      cleaned_url = url.to_s.strip
 
-      payload = { type: "external", external: { url: url } }
-      if caption && !caption.strip.empty?
-        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      if cleaned_url.length >= MAX_NOTION_URL_LEN # Added URL length check for consistency
+        warn "⚠️ [audio_block] URL length #{cleaned_url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
+        fallback_caption_text = 'Audio File'
+        if caption_input.is_a?(Array) && caption_input.first&.dig(:text, :content)
+          fallback_caption_text = caption_input.first[:text][:content]
+        elsif caption_input.is_a?(String)
+          fallback_caption_text = caption_input
+        end
+        return basecamp_asset_fallback_blocks(cleaned_url, fallback_caption_text, context)
+      end
+
+      payload = { type: "external", external: { url: cleaned_url } }
+      if caption_input
+        if caption_input.is_a?(Array) && caption_input.all? { |item| item.is_a?(Hash) }
+          payload[:caption] = caption_input unless caption_input.empty?
+        elsif caption_input.is_a?(String) && !caption_input.strip.empty?
+          payload[:caption] = [{ type: "text", text: { content: caption_input.strip } }]
+        end
       end
 
       block = { object: "block", type: "audio", audio: payload }
       [block].tap { |b_arr| debug "[audio_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
     end
 
-    def self.video_block(url, caption = nil, context = nil)
+    def self.video_block(url, caption_input = nil, context = nil)
       return [] unless url && !url.strip.empty?
+      cleaned_url = url.to_s.strip
 
-      payload = { type: "external", external: { url: url } }
-      if caption && !caption.strip.empty?
-        payload[:caption] = [{ type: "text", text: { content: caption } }]
+      if cleaned_url.length >= MAX_NOTION_URL_LEN
+        warn "⚠️ [video_block] URL length #{cleaned_url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
+        fallback_caption_text = 'Video File'
+        if caption_input.is_a?(Array) && caption_input.first&.dig(:text, :content)
+          fallback_caption_text = caption_input.first[:text][:content]
+        elsif caption_input.is_a?(String)
+          fallback_caption_text = caption_input
+        end
+        return basecamp_asset_fallback_blocks(cleaned_url, fallback_caption_text, context)
+      end
+
+      payload = { type: "external", external: { url: cleaned_url } }
+      if caption_input
+        if caption_input.is_a?(Array) && caption_input.all? { |item| item.is_a?(Hash) }
+          payload[:caption] = caption_input unless caption_input.empty?
+        elsif caption_input.is_a?(String) && !caption_input.strip.empty?
+          payload[:caption] = [{ type: "text", text: { content: caption_input.strip } }]
+        end
       end
 
       block = { object: "block", type: "video", video: payload }
@@ -176,6 +231,36 @@ module Notion
 
       block = { object: "block", type: "embed", embed: payload }
       [block].tap { |b_arr| debug "[embed_block] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
+    end
+
+    def self.file_block_external(url, name, caption_input = nil, context = nil)
+      return [] unless url && !url.strip.empty?
+
+      if url.length >= MAX_NOTION_URL_LEN
+        warn "⚠️ [file_block_external] URL length #{url.length} exceeds Notion limit (#{MAX_NOTION_URL_LEN}) — using fallback (#{context})"
+        # Determine a string caption for the fallback
+        fallback_caption_text = name || 'File'
+        if caption_input.is_a?(Array) && caption_input.first&.dig(:text, :content)
+          fallback_caption_text = caption_input.first[:text][:content] # Try to get a string from rich text
+        elsif caption_input.is_a?(String)
+          fallback_caption_text = caption_input
+        end
+        return basecamp_asset_fallback_blocks(url, fallback_caption_text, context)
+      end
+
+      payload = { type: "external", external: { url: url } }
+      payload[:name] = name if name && !name.strip.empty?
+
+      if caption_input
+        if caption_input.is_a?(Array) && caption_input.all? { |item| item.is_a?(Hash) }
+          payload[:caption] = caption_input unless caption_input.empty?
+        elsif caption_input.is_a?(String) && !caption_input.strip.empty?
+          payload[:caption] = [{ type: "text", text: { content: caption_input.strip } }]
+        end
+      end
+
+      block = { object: "block", type: "file", file: payload }
+      [block].tap { |b_arr| debug "[file_block_external] => #{b_arr.first.inspect} (#{context})" unless b_arr.empty? }
     end
 
     def self.empty_paragraph_block
@@ -299,7 +384,8 @@ module Notion
         }
       end
 
-      children = [link_block, count_block] + info_blocks
+      all_child_elements = [link_block, count_block, *info_blocks]
+      children = all_child_elements.flatten(1).compact
 
       {
         object: "block",

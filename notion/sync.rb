@@ -10,12 +10,14 @@ require_relative './state'
 require_relative './helpers'
 require_relative './pages'
 require_relative './process'
+require_relative '../utils/retry_utils'
 
 module Notion
   module Sync
     extend ::Utils::Logging
 
     MAX_PROJECT_THREADS = ENV.fetch("MAX_PROJECT_THREADS", "4").to_i
+    INITIAL_WORKER_STAGGER_BASE_SECONDS = ENV.fetch("INITIAL_WORKER_STAGGER_BASE_SECONDS", 0.25).to_f
 
     def self.sync_projects
       # ------------------------------------------------------------------
@@ -76,6 +78,7 @@ module Notion
 
       threads = Array.new(MAX_PROJECT_THREADS) do
         Thread.new do
+          ::Utils::RetryUtils.jitter_sleep(INITIAL_WORKER_STAGGER_BASE_SECONDS) if INITIAL_WORKER_STAGGER_BASE_SECONDS > 0
           while !queue.empty? && (item = queue.pop(true) rescue nil)
             proj, idx = item
             next unless proj

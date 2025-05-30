@@ -3,12 +3,58 @@ require 'json'
 require 'uri'
 require 'fileutils'
 require_relative './logging'
+require_relative './retry_utils'
 
 module Utils
   module HTTP
     extend ::Utils::Logging
 
+    # Custom Error Classes
+    class HTTPError < StandardError
+      attr_reader :code, :response_body
+      def initialize(message, code = nil, response_body = nil)
+        super(message)
+        @code = code
+        @response_body = response_body
+      end
+    end
+
+    class RateLimitError < HTTPError
+      attr_reader :retry_after
+      def initialize(message = "Rate limited", code = 429, retry_after_seconds = nil, response_body = nil)
+        super(message, code, response_body)
+        @retry_after = retry_after_seconds
+      end
+    end
+
+    class RetriableServerError < HTTPError; end # For 5xx errors
+    class NonRetriableClientError < HTTPError; end # For 4xx errors (excluding 429)
+    class NetworkError < StandardError; end # For transient network issues
+    class ConflictError < HTTPError; end
+
+    # Configuration for retries
+    DEFAULT_MAX_RETRY_ATTEMPTS = ENV.fetch('HTTP_MAX_RETRY_ATTEMPTS', 5).to_i
+    DEFAULT_INITIAL_BACKOFF_SECONDS = ENV.fetch('HTTP_INITIAL_BACKOFF_SECONDS', 1.0).to_f
+    DEFAULT_MAX_BACKOFF_SECONDS = ENV.fetch('HTTP_MAX_BACKOFF_SECONDS', 30.0).to_f
+
+    RETRIABLE_SERVER_ERROR_CODES = [500, 502, 503, 504].freeze
+    # Net::ProtocolError can also be transient, e.g. for bad GZIP encoding from server
+    TRANSIENT_NETWORK_ERROR_CLASSES = [
+      Net::OpenTimeout,
+      Net::ReadTimeout,
+      SocketError,
+      Errno::ECONNRESET,
+      Errno::ETIMEDOUT,
+      Errno::ECONNREFUSED,
+      Errno::EPIPE,
+      Errno::ECONNABORTED,
+      Net::ProtocolError,
+      OpenSSL::SSL::SSLError # Can occur for transient network/SSL handshake issues
+    ].freeze
+
     @@payload_counter = 0
+
+    DEFAULT_429_RETRY_AFTER_SECONDS = ENV.fetch('DEFAULT_429_RETRY_AFTER_SECONDS', 5).to_i
 
     def self.default_headers
       {
@@ -19,15 +65,15 @@ module Utils
     end
 
     def self.post_json(uri, payload, headers = default_headers, context: nil)
-      request_json(:post, uri, payload, headers, context: context)
+      with_retries(context: context) { request_json(:post, uri, payload, headers, context: context) }
     end
 
     def self.patch_json(uri, payload, headers = default_headers, context: nil)
-      request_json(:patch, uri, payload, headers, context: context)
+      with_retries(context: context) { request_json(:patch, uri, payload, headers, context: context) }
     end
 
     def self.get_json(uri, headers = default_headers, context: nil)
-      request_json(:get, uri, nil, headers, context: context)
+      with_retries(context: context) { request_json(:get, uri, nil, headers, context: context) }
     end
 
     # form_data_params should be an array of parts, where each part is typically:
@@ -35,10 +81,10 @@ module Utils
     # [name_string, file_io_object, { filename: '...', content_type: '...' }]
     def self.post_multipart_form_data(uri, form_data_params, headers = default_headers, context: nil)
       uri = URI(uri.to_s) unless uri.is_a?(URI::HTTPS) || uri.is_a?(URI::HTTP) # Allow HTTP for local testing if ever needed
-      raise "🚫 URI is not HTTPS for production: #{uri.inspect}" if uri.is_a?(URI::HTTP) && ENV['APP_ENV'] == 'production'
-      raise "🚫 URI scheme is not HTTP/HTTPS: #{uri.inspect}" unless uri.is_a?(URI::HTTPS) || uri.is_a?(URI::HTTP)
+      raise ArgumentError, "🚫 URI is not HTTPS for production: #{uri.inspect}" if uri.is_a?(URI::HTTP) && ENV['APP_ENV'] == 'production'
+      raise ArgumentError, "🚫 URI scheme is not HTTP/HTTPS: #{uri.inspect}" unless uri.is_a?(URI::HTTPS) || uri.is_a?(URI::HTTP)
 
-      with_retries do
+      with_retries(context: context) do
         raise Interrupt, "Shutdown during HTTP request" if $shutdown
 
         timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
@@ -91,11 +137,17 @@ module Utils
         end
         
         # Pass the form_data_params array directly. 
-        # Net::HTTP::Post#set_form can handle an array of [key, val] or [key, val, opts] parts.
-        req.set_form(form_data_params, 'multipart/form-data')
+        # Net::HTTP::Post::Multipart will create the boundary and format parts.
+        req.set_form form_data_params, 'multipart/form-data'
 
         start_time = Time.now
-        res = http.request(req)
+        res = nil
+        begin
+          res = http.request(req)
+        rescue *TRANSIENT_NETWORK_ERROR_CLASSES => e
+          error "#{log_prefix} Network error during MULTIPART POST to #{uri}#{context ? " (#{context})" : ""}: #{e.class} - #{e.message}"
+          raise NetworkError, "Network error during MULTIPART POST to #{uri}: #{e.class} - #{e.message}"
+        end
         elapsed = Time.now - start_time
 
         body = res.body.to_s.encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
@@ -105,12 +157,8 @@ module Utils
         File.write(response_filename, body)
 
         if res.code.to_i == 429 # Too Many Requests
-          wait = (res['Retry-After'] || 5).to_i
-          jitter = rand(1..3)
-          total_wait = wait + jitter
-          error "⏳ Rate limited. Waiting #{total_wait}s (Retry-After: #{wait}s + Jitter: #{jitter}s)..."
-          sleep total_wait
-          raise "Retrying after rate limit"
+          retry_after = (res['Retry-After'] || DEFAULT_429_RETRY_AFTER_SECONDS).to_i
+          raise RateLimitError.new("Multipart POST rate limited", res.code.to_i, retry_after, body)
         end
 
         unless res.code.to_i.between?(200, 299)
@@ -119,8 +167,16 @@ module Utils
           error "Status: #{res.code}"
           error "Request params log: #{request_params_log_filename}"
           error "Response payload: #{response_filename}"
-          error "Response Body snippet (first 500 chars):\n#{body[0, 500]}"
-          raise "❌ HTTP MULTIPART POST failed#{context ? " (#{context})" : ""}: URL: #{uri}, Status: #{res.code}, Body: #{body[0,500]}"
+          error "Response Body (first 500 chars): #{body.to_s[0,500]}"
+          status_code = res.code.to_i
+          if status_code == 429
+            retry_after = (res['Retry-After'] || DEFAULT_429_RETRY_AFTER_SECONDS).to_i
+            raise RateLimitError.new("Multipart POST rate limited", status_code, retry_after, body)
+          elsif RETRIABLE_SERVER_ERROR_CODES.include?(status_code)
+            raise RetriableServerError.new("Multipart POST server error", status_code, body)
+          else
+            raise NonRetriableClientError.new("Multipart POST client error or other non-retriable issue", status_code, body)
+          end
         end
 
         begin
@@ -130,7 +186,7 @@ module Utils
           JSON.parse(body)
         rescue JSON::ParserError => e
           error "❌ Failed to parse JSON response for MULTIPART POST to #{uri} (Status: #{res.code}): #{e.message}"
-          error "Response Body was (first 500 chars):\n#{body[0,500]}"
+          error "Response Body was (first 500 chars):\n#{body.to_s[0,500]}"
           # If it's a 2xx but not JSON, it's unexpected for this specific Notion endpoint.
           # We might want to return the raw body or a custom error hash.
           raise "Failed to parse JSON response (Status: #{res.code}): #{e.message}. Body snippet: #{body[0,500]}"
@@ -139,8 +195,9 @@ module Utils
     end
 
     def self.request_json(method, uri, payload, headers, context: nil)
-      uri = URI(uri.to_s) unless uri.is_a?(URI::HTTPS)
-      raise "🚫 URI is not HTTPS: #{uri.inspect}" unless uri.is_a?(URI::HTTPS)
+      uri = URI(uri.to_s) unless uri.is_a?(URI::HTTPS) || uri.is_a?(URI::HTTP) # Allow HTTP for local testing if ever needed
+      raise ArgumentError, "🚫 URI is not HTTPS for production: #{uri.inspect}" if uri.is_a?(URI::HTTP) && ENV['APP_ENV'] == 'production'
+      raise ArgumentError, "🚫 URI scheme is not HTTP/HTTPS: #{uri.inspect}" unless uri.is_a?(URI::HTTPS) || uri.is_a?(URI::HTTP)
 
       # 🚨 Hard protection for Notion block append misuse
       if method == :post && uri.path.include?("/blocks/") && uri.path.include?("/children")
@@ -185,14 +242,20 @@ module Utils
               when :post then Net::HTTP::Post.new(uri)
               when :patch then Net::HTTP::Patch.new(uri)
               when :get then Net::HTTP::Get.new(uri)
-              else raise "Unsupported method: #{method}"
+              else raise ArgumentError, "Unsupported method: #{method}"
               end
 
         headers.each { |k, v| req[k] = v }
         req.body = JSON.generate(payload) if payload
 
         start_time = Time.now
-        res = http.request(req)
+        res = nil
+        begin
+          res = http.request(req)
+        rescue *TRANSIENT_NETWORK_ERROR_CLASSES => e
+          error "#{log_prefix} Network error during #{method.to_s.upcase} to #{uri}#{context ? " (#{context})" : ""}: #{e.class} - #{e.message}"
+          raise NetworkError, "Network error during #{method.to_s.upcase} to #{uri}: #{e.class} - #{e.message}"
+        end
         elapsed = Time.now - start_time
 
         body = res.body.to_s.encode("UTF-8", invalid: :replace, undef: :replace, replace: "�")
@@ -200,13 +263,10 @@ module Utils
         debug "#{log_prefix} Saving response payload to: #{response_filename}"
         File.write(response_filename, body)
 
-        if res.code.to_i == 429
-          wait = (res['Retry-After'] || 5).to_i
-          jitter = rand(1..3)
-          total_wait = wait + jitter
-          error "⏳ Rate limited. Waiting #{total_wait}s (Retry-After: #{wait}s + Jitter: #{jitter}s)..."
-          sleep total_wait
-          raise "Retrying after rate limit"
+        status_code = res.code.to_i
+        if status_code == 429
+          retry_after = (res['Retry-After'] || DEFAULT_429_RETRY_AFTER_SECONDS).to_i
+          raise RateLimitError.new("Rate limited by API", status_code, retry_after, body)
         end
 
         unless res.code.to_i.between?(200, 299)
@@ -216,35 +276,74 @@ module Utils
           error "Request payload: #{request_filename}"
           error "Response payload: #{response_filename}"
           error "Response Body:\n#{body}"
-          raise "❌ HTTP #{method.to_s.upcase} failed#{context ? " (#{context})" : ""}:\nURL: #{uri}\nStatus: #{res.code}\nBody:\n#{body}"
+          if status_code == 409
+            raise ConflictError.new("HTTP #{method.to_s.upcase} failed with conflict", status_code, body)
+          elsif RETRIABLE_SERVER_ERROR_CODES.include?(status_code)
+            raise RetriableServerError.new("HTTP #{method.to_s.upcase} failed with server error", status_code, body)
+          else # Includes other 4xx errors (that are not 409), 3xx, etc.
+            raise NonRetriableClientError.new("HTTP #{method.to_s.upcase} failed with client or other non-retriable error", status_code, body)
+          end
         end
 
         JSON.parse(body)
       end
     end
 
-    def self.with_retries(max_attempts = 5)
+    def self.with_retries(max_attempts: DEFAULT_MAX_RETRY_ATTEMPTS, initial_backoff: DEFAULT_INITIAL_BACKOFF_SECONDS, context: nil, &block)
+      log "WITH_RETRIES_ENTRY: context.inspect = #{context.inspect}, context.class = #{context.class}, context.nil? = #{context.nil?}, context.empty? = #{context.respond_to?(:empty?) ? context.empty? : 'N/A'}" # Cascade Debug
+      debug "ENTERING with_retries. Initial context: #{context.inspect}"
       attempt = 0
+      current_backoff_seconds = initial_backoff
       begin
-        raise Interrupt, "Shutdown requested before attempt #{attempt + 1}" if $shutdown
-
-        yield
+        raise Interrupt, "Shutdown requested before attempt #{attempt + 1} for context: #{context}" if $shutdown
+        return yield
       rescue Interrupt => e
-        error "🛑 Interrupt detected during HTTP request: #{e.message}"
-        raise e
-      rescue => e
+        error "🛑 Interrupt detected during HTTP request for context: #{context}. Error: #{e.message}"
+        raise e # Re-raise Interrupt to stop the process
+      rescue RateLimitError => e
         attempt += 1
-        raise if attempt >= max_attempts || $shutdown
-
-        sleep_time = (2 ** attempt) + rand(1..3)
-        error "🔁 Retry ##{attempt} in #{sleep_time}s due to: #{e.message}"
-
-        sleep_time.times do
-          sleep 1
-          raise Interrupt, "Shutdown during retry sleep" if $shutdown
+        log_ctx = "[HTTP Retry] Context: #{context}, Attempt: #{attempt}/#{max_attempts}"
+        if attempt >= max_attempts || $shutdown
+          error "#{log_ctx} Max retries reached or shutdown requested after RateLimitError. Error: #{e.message} (Code: #{e.code}). Not retrying."
+          raise e # Re-raise the original RateLimitError
         end
-
+        base_sleep_seconds = e.retry_after || DEFAULT_429_RETRY_AFTER_SECONDS # Fallback if retry_after is nil
+        actual_sleep_seconds = Utils::RetryUtils.calculate_jittered_sleep(base_sleep_seconds.to_f)
+        warn "#{log_ctx} ⏳ Rate limited (Code: #{e.code}). Waiting #{actual_sleep_seconds.round(2)}s (Retry-After: #{e.retry_after || 'not set'}, Base: #{base_sleep_seconds}s) before retrying. Error: #{e.message}"
+        sleep(actual_sleep_seconds)
         retry
+      rescue RetriableServerError, NetworkError, ConflictError => e
+        log "WITH_RETRIES_RESCUE_CONTEXT_CHECK: context.inspect = #{context.inspect}, context.class = #{context.class}, context.nil? = #{context.nil?}, context.empty? = #{context.respond_to?(:empty?) ? context.empty? : 'N/A'}" # Cascade Debug
+        debug "ENTERING with_retries RESCUE for #{e.class}. Context in rescue: #{context.inspect}"
+        attempt += 1
+        log_ctx = "[HTTP Retry] Context: #{context}, Attempt: #{attempt}/#{max_attempts}"
+        if attempt >= max_attempts || $shutdown
+          error_type = e.class # Simpler way to get error type string
+          error "#{log_ctx} Max retries reached or shutdown requested after #{error_type} (Code: #{e.respond_to?(:code) ? e.code : 'N/A'}). Error: #{e.message}. Not retrying."
+          raise e # Re-raise the original error
+        end
+        actual_sleep_seconds = Utils::RetryUtils.calculate_jittered_sleep(current_backoff_seconds)
+        error_type_message = case e
+                             when RetriableServerError
+                               "Server error (Code: #{e.code})"
+                             when NetworkError
+                               "Network error"
+                             when ConflictError
+                               "Conflict error (Code: #{e.code})"
+                             else
+                               "Retriable error"
+                             end
+        warn "#{log_ctx} 🔁 #{error_type_message}. Waiting #{actual_sleep_seconds.round(2)}s (Base: #{current_backoff_seconds.round(2)}s) before retrying. Error: #{e.class} - #{e.message}"
+        sleep(actual_sleep_seconds)
+        current_backoff_seconds = [current_backoff_seconds * 2, DEFAULT_MAX_BACKOFF_SECONDS].min # Exponential backoff with cap
+        retry
+      rescue NonRetriableClientError => e
+        # Log and re-raise non-retriable client errors immediately
+        error "[HTTP Error] Context: #{context}. Non-retriable client error (Code: #{e.code}): #{e.message}. Body: #{e.response_body.to_s[0, 500]}"
+        raise e
+      rescue StandardError => e # Catch any other unexpected errors, log, and re-raise
+        error "[HTTP Error] Context: #{context}. Unexpected error during HTTP request: #{e.class} - #{e.message}. Backtrace: #{e.backtrace.take(5).join('\n')}"
+        raise e # Re-raise other StandardErrors without retry
       end
     end
   end

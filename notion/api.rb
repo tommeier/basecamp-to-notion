@@ -41,6 +41,10 @@ module Notion
       ::Utils::HTTP.patch_json(uri, payload, headers, context: context)
     end
 
+    def self.get_json(uri, headers = default_headers, context: nil)
+      ::Utils::HTTP.request_json(:get, uri, nil, headers, context: context)
+    end
+
     # Ensures filename has an extension based on MIME type.
     # Returns the original name if it already has an extension or if MIME type is unknown.
     def self.filename_with_extension(name, mime_type, context: nil)

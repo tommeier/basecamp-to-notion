@@ -28,9 +28,24 @@ DB_PATH                = "./sync_progress.db"
 BACKOFF_BASE           = 2
 
 # === BATCHING CONFIG ===
-MAX_NOTION_PAYLOAD_BYTES = 700_000
-MAX_NOTION_BLOCKS_PER_BATCH = 100
-MAX_CHILDREN_PER_BLOCK = 50
+# Max number of blocks per batch request to Notion (API limit is 100, we use a safer default)
+NOTION_BATCH_MAX_BLOCKS = ENV.fetch('NOTION_BATCH_MAX_BLOCKS', 50).to_i
+# Max payload size in KB for a batch request (Notion API limit is around 1000KB for block appends, we use a safer default)
+NOTION_BATCH_MAX_PAYLOAD_KB = ENV.fetch('NOTION_BATCH_MAX_PAYLOAD_KB', 700).to_i
+MAX_NOTION_PAYLOAD_BYTES = NOTION_BATCH_MAX_PAYLOAD_KB * 1024
+
+# Max children for a single block's internal structure (used by split_large_blocks)
+MAX_CHILDREN_PER_BLOCK = ENV.fetch('NOTION_MAX_CHILDREN_PER_BLOCK', 50).to_i
+
+
+# === SELENIUM WATCHDOG CONFIG ===
+# Number of consecutive Selenium operation failures for the same item (e.g., URL) before attempting a driver restart.
+SELENIUM_CONSECUTIVE_OPERATION_FAILURES_THRESHOLD = ENV.fetch('SELENIUM_CONSECUTIVE_OPERATION_FAILURES_THRESHOLD', 3).to_i
+# Number of times to attempt restarting the driver for a single problematic operation before giving up on that specific operation.
+SELENIUM_RESTARTS_PER_OPERATION_LIMIT = ENV.fetch('SELENIUM_RESTARTS_PER_OPERATION_LIMIT', 1).to_i
+# Total number of times the Selenium driver can be restarted globally during the script's run before the script terminates.
+SELENIUM_MAX_GLOBAL_RESTARTS = ENV.fetch('SELENIUM_MAX_GLOBAL_RESTARTS', 2).to_i
+
 
 # === DEBUGGING ===
 DEBUG_FILES            = false

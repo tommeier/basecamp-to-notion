@@ -12,11 +12,16 @@ require_relative './constants'
 require_relative './logger'
 require_relative './../../utils/basecamp_session'
 require_relative './../../utils/google_session'
+require_relative '../retry_utils'
 
 module Utils
   module MediaExtractor
     module Resolver
       extend ::Utils::Logging
+
+      # Base sleep duration for retrying Google browser navigation, in seconds.
+      # Can be overridden by an environment variable.
+      GOOGLE_BROWSER_RETRY_BASE_SLEEP_SECONDS = ENV.fetch('GOOGLE_BROWSER_RETRY_BASE_SLEEP_SECONDS', 1.5).to_f
 
       # ------------------------------------------------------------------
       # Helpers – detect & build preview URLs for expired storage links
@@ -50,7 +55,7 @@ module Utils
         Utils::BasecampSession.ensure_cookies!
 
         log "💻 [Resolver] Starting Google browser session..."
-        Utils::GoogleSession.ensure_cookies!
+        Utils::GoogleSession.prime_session!
 
         log "🔍 [Resolver] Browser sessions ready: "\
             "Basecamp=#{!!Utils::BasecampSession.driver}, "\
@@ -144,45 +149,73 @@ module Utils
                           private_url.include?("usercontent.google.com")
 
           if is_google_url
-            # GoogleSession handles its own synchronization internally for driver access and navigation
-            # The driver method ensures cookies and returns an initialized driver.
-            driver = Utils::GoogleSession.driver
-            return nil unless driver
+            final_url_from_google = nil
+            begin
+              final_url_from_google = Utils::GoogleSession.execute_operation(private_url) do |op_driver|
+                inner_max_retries = 3 # Max attempts for quick 403 checks before failing the operation for watchdog
+                inner_retries = 0
 
-            # Special handling for Google 403 loops
-            max_retries   = 3
-            retries       = 0
-            random_sleep  = -> { sleep(1 + rand * 2) }
+                loop do # Inner retry loop for handling 403s or waiting for redirects
+                  op_driver.navigate.to(private_url)
 
-            while retries < max_retries
-              random_sleep[]
-              # navigate_to is synchronized internally in GoogleSession
-              unless Utils::GoogleSession.navigate_to(private_url)
-                warn "⚠️  Google navigate failed (attempt #{retries + 1})"
-                return nil if (retries += 1) >= max_retries
-                next
-              end
+                  # Check for 403 errors
+                  if op_driver.page_source.include?("403. That's an error") || op_driver.page_source.include?("Your client does not have permission")
+                    inner_retries += 1
+                    if inner_retries >= inner_max_retries
+                      warn "⚠️ Google: Persistent 403 for '#{private_url}' after #{inner_retries} quick checks. Failing operation for watchdog."
+                      raise Selenium::WebDriver::Error::PermissionDeniedError, "Persistent 403 for '#{private_url}' after #{inner_retries} quick checks."
+                    end
+                    warn "⚠️ Google: Detected 403 for '#{private_url}'. Quick retry ##{inner_retries} of #{inner_max_retries}. Sleeping..."
+                    Utils::RetryUtils.jitter_sleep(GOOGLE_BROWSER_RETRY_BASE_SLEEP_SECONDS)
+                    next # Continue to the next iteration of the inner loop
+                  end
 
-              if driver.page_source.include?("403. That's an error") ||
-                 driver.page_source.include?("Your client does not have permission")
-                warn "⚠️  Google 403 detected (attempt #{retries + 1})"
-                return nil if (retries += 1) >= max_retries
-              else
-                break
-              end
+                  # If not a 403, wait for redirect
+                  begin
+                    wait_timeout = 20 # seconds
+                    Selenium::WebDriver::Wait.new(timeout: wait_timeout).until do
+                      current = op_driver.current_url
+                      current && current != private_url && !current.start_with?('about:blank')
+                    end
+                  rescue Selenium::WebDriver::Error::TimeoutError
+                    warn "⚠️ Google: Timeout (#{wait_timeout}s) waiting for redirect from '#{private_url}'. Failing operation for watchdog."
+                    raise # Re-raise TimeoutError to be caught by execute_operation
+                  end
+                  
+                  # If redirect successful and no 403, break inner loop and return current URL
+                  break op_driver.current_url
+                end # End inner retry loop
+              end # End execute_operation block
+
+            rescue Utils::GoogleSession::SeleniumOperationMaxRestartsError => e
+              warn "🚫 Watchdog: Max restarts for operation '#{private_url}' reached in try_browser_resolve. #{e.message} (#{context})"
+              # final_url_from_google remains nil, will lead to returning nil from try_browser_resolve
+            rescue Utils::GoogleSession::SeleniumGlobalMaxRestartsError => e
+              error "🚫 Watchdog: Global Selenium restart limit reached in try_browser_resolve. Halting. #{e.message} (#{context})"
+              raise # Re-raise to be handled at a higher level (e.g., main script loop)
+            # Other Selenium::WebDriver::Error types (like PermissionDeniedError or TimeoutError raised above)
+            # if not caught by execute_operation's restart logic, will propagate to the outer rescue.
             end
-            # Wait up to 20s for a redirect (specific to Google flow here)
-            Selenium::WebDriver::Wait.new(timeout: 20).until { driver.current_url != private_url }
-            final = driver.current_url
+            final = final_url_from_google
 
           else # It's a Basecamp URL, use with_driver for synchronized access
             final_url_from_bc = nil
             Utils::BasecampSession.with_driver do |bc_driver|
-              return nil unless bc_driver # Should not happen if with_driver is correct
+              # Ensure bc_driver is not nil, though with_driver should handle this
+              unless bc_driver
+                warn "⚠️ Basecamp: with_driver did not yield a driver for '#{private_url}'. (#{context})"
+                return nil # Explicitly return nil if no driver
+              end
 
               bc_driver.navigate.to(private_url)
               # Wait up to 20s for a redirect
-              Selenium::WebDriver::Wait.new(timeout: 20).until { bc_driver.current_url != private_url }
+              wait_timeout = 20 # seconds
+              begin
+                Selenium::WebDriver::Wait.new(timeout: wait_timeout).until { bc_driver.current_url != private_url && !bc_driver.current_url.start_with?('about:blank') }
+              rescue Selenium::WebDriver::Error::TimeoutError
+                warn "⚠️ Basecamp: Timeout (#{wait_timeout}s) waiting for redirect from '#{private_url}'. (#{context})"
+                # Allow to proceed, final_url_from_bc might still be the original if no redirect or error page
+              end
               final_url_from_bc = bc_driver.current_url
             end
             final = final_url_from_bc

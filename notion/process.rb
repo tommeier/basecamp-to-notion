@@ -127,19 +127,34 @@ module Notion
                 Thread.exit
               end
 
-              raise Interrupt, "Shutdown before creating tool page" if $shutdown
-
-              tool_page = Notion::Pages.create_page(
-                { "name" => "#{emoji} #{title}", "url" => tool["url"] },
+              full_tool_title = "#{emoji} #{title}"
+              log_find_context = "[#{name}] Find existing: #{full_tool_title}"
+              tool_page_id = Notion::Pages.find_child_page_by_title(
                 project_page_id,
-                children: [],
-                context: "#{emoji} #{title} (Tool Page)",
-                url: tool["url"]
+                full_tool_title,
+                context: log_find_context
               )
-              tool_page_id = tool_page&.dig("id")
+
+              if tool_page_id
+                log "↪️  [#{name}] Found existing Notion page for tool '#{full_tool_title}': #{tool_page_id}"
+              else
+                # Only check for shutdown if we are about to create
+                raise Interrupt, "Shutdown before creating tool page '#{full_tool_title}'" if $shutdown
+
+                log "🆕 [#{name}] Creating Notion page for tool '#{full_tool_title}'"
+                log_create_context = "[#{name}] Create: #{full_tool_title} (Tool Page)"
+                tool_page_response = Notion::Pages.create_page(
+                  { "name" => full_tool_title, "url" => tool["url"] },
+                  project_page_id,
+                  children: [],
+                  context: log_create_context,
+                  url: tool["url"]
+                )
+                tool_page_id = tool_page_response&.dig("id")
+              end
 
               unless tool_page_id
-                error "🚨 [#{name}] Failed to create Notion page for tool '#{title}'. Skipping tool."
+                error "🚨 [#{name}] Failed to obtain Notion page ID for tool '#{full_tool_title}'. Skipping tool."
                 Thread.exit
               end
 

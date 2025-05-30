@@ -29,7 +29,7 @@ module Utils
       #  DOM traversal
       # ===============================================================
       def self.handle_node_recursive(node, context, parent_page_id,
-                                     notion_blocks, embed_blocks,
+                                     notion_blocks, embed_blocks, failed_attachments_details,
                                      seen_nodes = Set.new)
         return if node.comment?
         return if seen_nodes.include?(node.object_id)
@@ -46,7 +46,7 @@ module Utils
         # Handle wrappers
         case node.name.downcase
         when 'div', 'p'
-          notion_blocks.concat process_div_or_paragraph(node, context, parent_page_id)
+          notion_blocks.concat process_div_or_paragraph(node, context, parent_page_id, failed_attachments_details)
           return
         when 'ul', 'ol'
           notion_blocks.concat build_nested_list_blocks(node, context, seen_nodes)
@@ -55,21 +55,21 @@ module Utils
           notion_blocks.concat process_table(node, context)
           return
         when 'details'
-          notion_blocks.concat process_details_toggle(node, context)
+          notion_blocks.concat process_details_toggle(node, context, failed_attachments_details)
           return
         end
 
-        handle_node(node, context, parent_page_id, notion_blocks, embed_blocks, seen_nodes)
+        handle_node(node, context, parent_page_id, notion_blocks, embed_blocks, failed_attachments_details, seen_nodes)
         return if SKIP_CHILDREN_NODES.include?(node.name)
 
         node.children.each do |child|
           next unless child.element?
           handle_node_recursive(child, context, parent_page_id,
-                                notion_blocks, embed_blocks, seen_nodes)
+                                notion_blocks, embed_blocks, failed_attachments_details, seen_nodes)
         end
       end
 
-      def self.handle_node(node, context, parent_page_id, notion_blocks, embed_blocks, seen_nodes = Set.new)
+      def self.handle_node(node, context, parent_page_id, notion_blocks, embed_blocks, failed_attachments_details, seen_nodes = Set.new)
         return if inside_bc_attachment?(node) && node.name != 'bc-attachment'
 
         case node.name.downcase
@@ -79,11 +79,11 @@ module Utils
           return
         when 'bc-attachment'
           return if node['content-type'] == 'application/vnd.basecamp.mention'
-          blocks = process_bc_attachment(node, context, parent_page_id)
+          blocks = process_bc_attachment(node, context, parent_page_id, failed_attachments_details)
           validate_blocks!(blocks, 'process_bc_attachment', node, context)
           notion_blocks.concat(blocks)
         when 'figure'
-          blocks = process_figure(node, context, parent_page_id)
+          blocks = process_figure(node, context, parent_page_id, failed_attachments_details)
           validate_blocks!(blocks, 'process_figure', node, context)
           notion_blocks.concat(blocks)
         when 'figcaption'
@@ -105,7 +105,7 @@ module Utils
         when 'table'
           notion_blocks.concat process_table(node, context)
         when 'details'
-          notion_blocks.concat process_details_toggle(node, context)
+          notion_blocks.concat process_details_toggle(node, context, failed_attachments_details)
         when 'hr'
           notion_blocks << Helpers.divider_block
         when 'iframe'
@@ -118,7 +118,7 @@ module Utils
       # ===============================================================
       #  Paragraph / DIV
       # ===============================================================
-      def self.process_div_or_paragraph(node, context, parent_page_id)
+      def self.process_div_or_paragraph(node, context, parent_page_id, failed_attachments_details)
         return [Notion::Helpers.empty_paragraph_block] if empty_or_whitespace_div?(node)
 
         blocks               = []
@@ -147,7 +147,7 @@ module Utils
              child['content-type'] != 'application/vnd.basecamp.mention'
             build_paragraph_blocks.call(current_inline_group)
             current_inline_group = []
-            blocks.concat(process_bc_attachment(child, context, parent_page_id))
+            blocks.concat(process_bc_attachment(child, context, parent_page_id, failed_attachments_details))
           elsif child.element? && %w[ul ol].include?(child.name)
             build_paragraph_blocks.call(current_inline_group)
             current_inline_group = []
@@ -155,7 +155,7 @@ module Utils
           elsif child.element? && child.name.downcase == 'figure'
             build_paragraph_blocks.call(current_inline_group)
             current_inline_group = []
-            blocks.concat process_figure(child, context, parent_page_id)
+            blocks.concat process_figure(child, context, parent_page_id, failed_attachments_details)
           elsif child.element? && %w[h1 h2 h3].include?(child.name.downcase)
             build_paragraph_blocks.call(current_inline_group)
             current_inline_group = []
@@ -219,13 +219,52 @@ module Utils
             end
           end
           blocks << block
-        end
-        blocks
-      end
+        end # Closes list_node.xpath('./li').each do
+        blocks # Return value for build_nested_list_blocks
+      end # Closes def self.build_nested_list_blocks
+
+      # Note: This method is not currently called from within MediaExtractor::Handlers.
+      # It's preserved from a previous version.
+      def self.process_list_item(node, context)
+        blocks = []
+        # Iterate through child_node of the list item (e.g., <span>, <a>, or nested <ul>/<ol>)
+        node.children.each_with_index do |child_node, index|
+          if child_node.name == 'div' && child_node.css('ul, ol').any?
+            # If the div contains a list, process that list.
+            child_node.css('ul, ol').each do |nested_list_node|
+              # Pass a new Set for seen_nodes to avoid interference if called recursively
+              # within a broader seen_nodes context.
+              blocks.concat build_nested_list_blocks(nested_list_node, "#{context}_li_div_nested_list_#{index}", Set.new)
+            end
+          elsif child_node.name == 'ul' || child_node.name == 'ol'
+            # If the child is a list itself, process it.
+            blocks.concat build_nested_list_blocks(child_node, "#{context}_li_direct_nested_list_#{index}", Set.new)
+          else
+            # Otherwise, treat as rich text content for the current list item.
+            # Create a temporary parent for the child_node to pass to extract_rich_text_from_node_children
+            temp_parent = Nokogiri::HTML.fragment("<div></div>").first_element_child
+            temp_parent.add_child(child_node.dup) # Use dup to avoid issues with node removal or modification
+            rich_text_content = Utils::MediaExtractor::RichText.extract_rich_text_from_node_children(temp_parent, context)
+
+            if rich_text_content.any?
+              # This list item contributes a paragraph block with its rich text.
+              # This assumes that list items are effectively paragraphs for complex content.
+              block = {
+                object: 'block',
+                type: 'paragraph',
+                paragraph: { rich_text: rich_text_content }
+              }
+              blocks << block
+            end
+          end # Closes if/elsif/else for child_node in process_list_item
+        end # Closes node.children.each_with_index in process_list_item
+        blocks # Return value for process_list_item
+      end # Closes def self.process_list_item
+
       # ---------------------------------------------------------------
       #  Attachments / <figure> nodes
       # ---------------------------------------------------------------
-      def self._process_bc_attachment_or_figure(node, raw_url, context, parent_page_id)
+      def self._process_bc_attachment_or_figure(node, raw_url, context, parent_page_id, failed_attachments_details)
         return [] if raw_url.nil? || raw_url.empty?
 
         blocks = []
@@ -233,321 +272,287 @@ module Utils
         caption = caption_node&.text&.strip
         caption_node&.remove # Don’t keep the node around
 
-        # 1️⃣ Resolve the Basecamp link (may still be private)
-        resolved_url = Resolver.resolve_basecamp_url(raw_url, context)
+        # 1️⃣ Resolve the Basecamp link
+        resolved_url = nil
+        begin
+          resolved_url = ::Utils::MediaExtractor::Resolver.resolve_basecamp_url(raw_url, context)
+        rescue StandardError => e
+          log "🔥 Error resolving URL '#{raw_url}' in _process_bc_attachment_or_figure: #{e.class} - #{e.message} - Backtrace: #{e.backtrace.take(3).join(' | ')}"
+          failed_attachments_details << { url: raw_url, error: "#{e.class}: #{e.message}", context: context }
+          return [::Notion::Helpers.basecamp_asset_fallback_blocks(raw_url, "Resolution Error: #{e.message}", context)].compact
+        end
+
+        if resolved_url.nil?
+          log "⚠️ URL '#{raw_url}' resolved to nil after attempt. Using fallback. Context: #{context}"
+          failed_attachments_details << { url: raw_url, error: "Resolved to nil", context: context }
+          return [::Notion::Helpers.basecamp_asset_fallback_blocks(raw_url, "Failed to resolve after attempt", context)].compact
+        end
 
         is_notion_hosted_block = false
         uploaded_mime_type = nil
-        final_url_for_block = resolved_url # Default, may be overridden or become nil if file_id is used
+        final_url_for_block = resolved_url
         file_id_for_block = nil
         filename_from_upload = nil
 
-        # 2️⃣ If Notion uploads are enabled and the asset is still private (or a Google URL that needs proxying),
-        #    try to upload it to Notion.
+        # 2️⃣ If Notion uploads are enabled and the asset might need it
         should_attempt_upload = Notion::Uploads.enabled? &&
-                                (Resolver.still_private_asset?(resolved_url) ||
+                                (::Utils::MediaExtractor::Resolver.still_private_asset?(resolved_url) ||
                                  resolved_url.to_s.include?('googleusercontent.com') ||
                                  resolved_url.to_s.include?('usercontent.google.com'))
 
         if should_attempt_upload
-          url_to_upload = resolved_url || raw_url # Ensure we have a URL
+          url_to_upload = resolved_url
           upload_result = nil
-
           if url_to_upload.to_s.include?('googleusercontent.com') || url_to_upload.to_s.include?('usercontent.google.com')
-            log "[Handlers] Attempting Google URL upload for: #{url_to_upload} - Context: #{context}"
             upload_result = Notion::Uploads::FileUpload.upload_from_google_url(url_to_upload, context: context)
-          elsif Resolver.still_private_asset?(url_to_upload) # Check again if it's a private Basecamp asset
-            log "[Handlers] Attempting Basecamp asset upload for: #{url_to_upload} - Context: #{context}"
+          elsif ::Utils::MediaExtractor::Resolver.still_private_asset?(url_to_upload)
             upload_result = Notion::Uploads::FileUpload.upload_from_basecamp_url(url_to_upload, context: context)
-          else
-            log "[Handlers] URL #{url_to_upload} is not a private Basecamp asset or Google URL, skipping Notion upload attempt. - Context: #{context}"
           end
 
           if upload_result && upload_result[:success]
             is_notion_hosted_block = true
-            uploaded_mime_type     = upload_result[:mime_type]
-            file_id_for_block      = upload_result[:file_upload_id]
-            filename_from_upload   = upload_result[:filename]
-
-            if upload_result[:notion_url] # Direct URL from multi-part complete
-              final_url_for_block = upload_result[:notion_url]
-              log "[Handlers] Successfully uploaded to Notion (direct URL): #{final_url_for_block} (MIME: #{uploaded_mime_type}) - Context: #{context}"
-            else # Successful upload, will use file_id_for_block for the Notion block
-              final_url_for_block = nil # Ensure no external URL is used for the block itself
-              log "[Handlers] Successfully uploaded to Notion (will use file_id: #{file_id_for_block}) (MIME: #{uploaded_mime_type}, Filename: #{filename_from_upload}) - Context: #{context}"
-            end
-          else # Upload not attempted, or failed
+            uploaded_mime_type = upload_result[:mime_type]
+            file_id_for_block = upload_result[:file_upload_id]
+            filename_from_upload = upload_result[:filename]
+            final_url_for_block = upload_result[:notion_url] # This might be nil, if so, block uses file_id
+            log "[Handlers] Uploaded to Notion (FileID: #{file_id_for_block}, S3: #{final_url_for_block || 'N/A'}, MIME: #{uploaded_mime_type}) - Context: #{context}"
+          else
             is_notion_hosted_block = false
-            file_id_for_block      = nil
-
-            if upload_result # Upload was attempted but failed
-              error_msg = upload_result[:error] || "Unknown upload error"
-              warn "[Handlers] Notion upload failed for #{url_to_upload}. Error: #{error_msg}. - Context: #{context}"
-              if Resolver.still_private_asset?(raw_url)
-                final_url_for_block = raw_url
-                warn "[Handlers] Falling back to original Basecamp URL: #{final_url_for_block} - Context: #{context}"
-              end
-            elsif should_attempt_upload
-              warn "[Handlers] Notion upload was scheduled for #{url_to_upload} but no upload_result was obtained. Falling back. - Context: #{context}"
-              if Resolver.still_private_asset?(raw_url)
-                final_url_for_block = raw_url
-              end
+            if upload_result # Attempted but failed
+              warn "[Handlers] Notion upload failed for #{url_to_upload}. Error: #{upload_result[:error]}. Falling back to resolved_url. - Context: #{context}"
             end
+            # final_url_for_block remains 'resolved_url'
           end
         end
 
         # 3️⃣ Decide which kind of Notion block we need
-        can_create_notion_block = is_notion_hosted_block || final_url_for_block
-
-        unless can_create_notion_block
-          warn "[Handlers] No usable URL or file_id found for raw_url: #{raw_url}, skipping block creation. - Context: #{context}"
-          return []
+        actual_caption_text = filename_from_upload || caption
+        caption_payload = []
+        if actual_caption_text && !actual_caption_text.strip.empty?
+          caption_payload = [{ type: "text", text: { content: actual_caption_text.strip } }]
         end
 
-        if is_notion_hosted_block
-          notion_block_type_string = if uploaded_mime_type&.start_with?('image/')
-                                     'image'
-                                   elsif uploaded_mime_type == 'application/pdf'
-                                     'pdf'
-                                   elsif uploaded_mime_type&.start_with?('video/')
-                                     'video'
-                                   elsif uploaded_mime_type&.start_with?('audio/')
-                                     'audio'
-                                   else
-                                     'file'
-                                   end
-
-          caption_payload_for_media = nil
-          actual_caption = caption || filename_from_upload
-          if actual_caption && !actual_caption.empty?
-            caption_payload_for_media = [{ type: "text", text: { content: actual_caption.strip } }]
+        if is_notion_hosted_block && file_id_for_block
+          type_str = if uploaded_mime_type&.start_with?('image/') then 'image'
+                     elsif uploaded_mime_type == 'application/pdf' then 'pdf'
+                     elsif uploaded_mime_type&.start_with?('video/') then 'video'
+                     elsif uploaded_mime_type&.start_with?('audio/') then 'audio'
+                     else 'file' end
+          payload_key = type_str.to_sym
+          payload_content = { type: "file_upload", file_upload: { id: file_id_for_block } }
+          payload_content[:caption] = caption_payload if type_str == 'image' && caption_payload.any?
+          if type_str == 'file'
+            fname = filename_from_upload || caption || (::URI.parse(raw_url).path.split('/').last rescue "Attached File")
+            payload_content[:name] = fname.strip
           end
+          blocks << { object: 'block', type: type_str, payload_key => payload_content }
 
-          # Determine the key for the block type specific content (e.g., :image, :file, :pdf)
-          payload_key = notion_block_type_string.to_sym
-
-          block_data_for_type_key = nil # This will hold the content for the payload_key (e.g., image object, file object)
-
-          if file_id_for_block
-            # Primary: Use file_upload_id from Notion upload
-            block_data_for_type_key = {
-              type: "file_upload", # Indicates the source is a Notion file_upload object
-              file_upload: {
-                id: file_id_for_block
-              }
-            }
-            log "[Handlers] Constructing Notion block using file_id: #{file_id_for_block} for type '#{notion_block_type_string}'. Context: #{context}"
-
-          elsif final_url_for_block
-            # Secondary: Use final_url_for_block (e.g., from multi-part upload or if Notion API provides a direct S3 URL)
-            # This assumes final_url_for_block is a Notion S3 URL that can be used directly.
-            block_data_for_type_key = {
-              url: final_url_for_block
-              # For a Notion S3 URL, 'type' is not 'external'. The block type (image, file) implies how to handle the URL.
-            }
-            log "[Handlers] Constructing Notion block using final_url_for_block for type '#{notion_block_type_string}'. Context: #{context}"
-
-          else
-            # Fallback: Neither file_id_for_block nor final_url_for_block is available from upload_result.
-            # Attempt to use resolved_url as an external link.
-            if resolved_url
-              warn "[Handlers] Notion-hosted block expected, but file_id and S3 URL are missing. Raw: #{raw_url}. Falling back to external link: #{resolved_url}. Context: #{context}"
-              blocks.concat(::Notion::Helpers.basecamp_asset_fallback_blocks(resolved_url, caption || filename_from_upload || "Linked Asset", context))
-              return blocks.compact # Exit processing for this asset, returning blocks formed by fallback
+        elsif final_url_for_block # Use external URL (publicly resolved_url or Notion S3 from upload)
+          content_type = node['content-type']
+          if Helpers.image_url?(final_url_for_block) || content_type&.start_with?('image/')
+            blocks << ::Notion::Helpers.image_block(final_url_for_block, caption_payload, context)
+          elsif Helpers.pdf_url?(final_url_for_block) || content_type == 'application/pdf'
+            blocks << ::Notion::Helpers.pdf_file_block(final_url_for_block, caption_payload, context)
+          elsif Helpers.video_url?(final_url_for_block) || content_type&.start_with?('video/')
+            blocks << ::Notion::Helpers.video_block(final_url_for_block, caption_payload, context)
+          elsif Helpers.audio_url?(final_url_for_block) || content_type&.start_with?('audio/')
+            blocks << ::Notion::Helpers.audio_block(final_url_for_block, caption_payload, context)
+          else # Default to a general file block or embed if possible
+            embed = Helpers.build_embed_block(final_url_for_block, context)
+            if embed && embed[:embed] && embed[:embed][:url]
+              blocks << embed
             else
-              error "[Handlers] Critical: Cannot create Notion block. All identifiers (file_id, S3 URL, resolved_url) missing for raw_url: #{raw_url}. Skipping. Context: #{context}"
-              return [] # No block can be created for this asset
+              fname = filename_from_upload || caption || (::URI.parse(final_url_for_block).path.split('/').last rescue "Linked File")
+              blocks << ::Notion::Helpers.file_block_external(final_url_for_block, fname.strip, caption_payload, context)
             end
           end
-
-          # If block_data_for_type_key is nil here, it means an early return happened (e.g. from fallback).
-          # Otherwise, proceed to add caption and name, then construct the block.
-
-          if block_data_for_type_key
-            # Add caption if it exists. caption_payload_for_media was defined earlier.
-            block_data_for_type_key[:caption] = caption_payload_for_media if caption_payload_for_media
-
-            # For 'file' type blocks, Notion requires a 'name' property within the file object.
-            if notion_block_type_string == 'file'
-              file_block_name = filename_from_upload # Prioritize filename from upload result
-              if file_block_name.nil? || file_block_name.strip.empty?
-                file_block_name = caption # Fallback to original caption text
-                if file_block_name.nil? || file_block_name.strip.empty?
-                  file_block_name = "Untitled File" # Ultimate fallback
-                end
-              end
-              block_data_for_type_key[:name] = file_block_name.strip
-            end
-
-            # Construct the final block structure and add it to the blocks array
-            blocks << {
-              object: 'block',
-              type: notion_block_type_string, # The actual Notion block type: 'image', 'file', 'pdf', etc.
-              payload_key => block_data_for_type_key # e.g., image: { type: "file_upload", ... } or file: { url: ..., name: ... }
-            }
-          else
-            # This path should ideally not be reached if early returns are correct.
-            # If block_data_for_type_key is nil, it means no block content was formed by the primary/secondary paths,
-            # and the fallback path either returned or also failed to produce blocks (which should have returned []).
-            # This log is a safeguard.
-            log "[Handlers] No block data was constructed for Notion-hosted asset (raw_url: #{raw_url}), and fallback did not result in blocks or early exit. Context: #{context}"
-          end
-
-        else # Not a Notion-hosted file, must be an external URL
-          if final_url_for_block.nil?
-            warn "[Handlers] External URL is nil for raw_url: #{raw_url}, cannot create embed/link. - Context: #{context}"
-            return []
-          end
-
-          url_for_external_block = resolved_url || final_url_for_block
-
-          if url_for_external_block.nil?
-              warn "[Handlers] No URL available for external block. Raw: #{raw_url}. Skipping. - Context: #{context}"
-              return []
-          end
-
-          is_external_image = Helpers.image_url?(url_for_external_block) || (node['content-type']&.start_with?('image/'))
-
-          if is_external_image
-            caption_payload = caption ? [{ type: "text", text: { content: caption } }] : []
-            blocks << {
-              object: 'block',
-              type:   'image',
-              image:  {
-                type:     'external',
-                external: { url: url_for_external_block },
-                caption:  caption_payload
-              }
-            }
-          else
-            link_text = caption || node['sgid'] || (File.basename(URI.parse(url_for_external_block).path) rescue nil) || "Attached File"
-            blocks.concat(::Notion::Helpers.basecamp_asset_fallback_blocks(url_for_external_block, link_text.strip, context))
-          end
+        else
+          # This case means resolved_url was valid, but upload wasn't attempted or failed, AND final_url_for_block became nil (should not happen if logic is sound)
+          log "‼️ [Handlers] No usable URL/file_id for block construction. Raw: #{raw_url}. Resolved: #{resolved_url}. Context: #{context}"
+          failed_attachments_details << { url: raw_url, error: "No usable URL/file_id after processing", context: context }
+          blocks.concat(::Notion::Helpers.basecamp_asset_fallback_blocks(raw_url, caption || "Asset processing failed", context))
         end
 
         blocks.compact
+
       rescue StandardError => e
-        warn "💥 [Handlers._process_bc_attachment_or_figure] Error processing node: #{e.message} - URL: #{raw_url} - Context: #{context}"
-        warn e.backtrace.take(5).join("\n")
-        if resolved_url || raw_url
-          fallback_url = resolved_url || raw_url
-          fallback_text = caption || "Error processing attachment - see link"
-          blocks.concat(::Notion::Helpers.basecamp_asset_fallback_blocks(fallback_url, fallback_text, context))
-          return blocks.compact
+        warn "💥 [Handlers._process_bc_attachment_or_figure] Error: #{e.class} - #{e.message} - URL: #{raw_url} - Context: #{context}"
+        warn e.backtrace.first(5).join("\n")
+        failed_attachments_details << { url: raw_url, error: "Generic error in _PBAOF: #{e.class}: #{e.message}", context: context }
+        # Return a fallback block so the sync process can continue for other elements
+        return [::Notion::Helpers.basecamp_asset_fallback_blocks(raw_url || "unknown_url", caption || "Error processing asset", context)].compact
+      end
+
+      def self.process_bc_attachment(node, context, parent_page_id, failed_attachments_details)
+        # If bc-attachment contains a figure, delegate to process_figure
+        # This handles cases where Basecamp might wrap figures in bc-attachment tags
+        figure_node = node.at_css('figure')
+        if figure_node
+          return process_figure(figure_node, context, parent_page_id, failed_attachments_details)
         end
-        []
+
+        raw_url = (node['href'] || node['url'] || node['sgid'])&.strip # sgid for direct uploads
+        _process_bc_attachment_or_figure(node, raw_url, context, parent_page_id, failed_attachments_details)
       end
 
-      def self.process_bc_attachment(node, context, parent_page_id)
-        return process_figure(node, context, parent_page_id) if node.at_css('figure')
-        raw_url = (node['href'] || node['url'] || node['src'])&.strip
-        _process_bc_attachment_or_figure(node, raw_url, context, parent_page_id)
-      end
-
-      def self.process_figure(node, context, parent_page_id)
-        img      = node.at_css('img')
-        raw_url  = (node['href'] || img&.[]('src'))&.strip
-        _process_bc_attachment_or_figure(node, raw_url, context, parent_page_id)
+      def self.process_figure(node, context, parent_page_id, failed_attachments_details)
+        img = node.at_css('img')
+        # For figures, the primary URL source is often an <img> tag's src or a link wrapping the figure.
+        # Basecamp might also use 'data-image-src' or similar for lazily-loaded images within figures.
+        raw_url = (node['href'] || img&.[]('src') || img&.[]('data-src') || node['data-image-src'])&.strip
+        _process_bc_attachment_or_figure(node, raw_url, context, parent_page_id, failed_attachments_details)
       end
 
       # ---------------------------------------------------------------
       #  Code, headings, quote, table, details...
       # ---------------------------------------------------------------
       def self.process_code_block(node, context)
-        text = node.text.strip
-        return [] if text.empty?
+        text = node.text # Keep original spacing for code blocks
+        return [] if text.empty? && node.children.empty? # Allow empty code blocks if they are truly empty, not just whitespace
 
         lang = 'plain text'
-        code_el = node.at_css('code') || node
+        code_el = node.at_css('code') || node # Prefer <code> if present
+
+        # Try to determine language from class or data-lang attribute
         if (cls = code_el['class'])&.match(/language-(\w+)/)
           lang = Regexp.last_match(1)
         elsif (data_lang = code_el['data-lang'])
           lang = data_lang.strip
         end
 
-        rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
-        return [] if rich_text.empty?
-        Helpers.chunk_rich_text(rich_text).map do |chunk|
-          {
-            object: 'block',
-            type:   'code',
-            code:   { rich_text: chunk, language: lang }
-          }
+        # Extract rich text, preserving newlines and essential whitespace for code
+        rich_text_spans = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(code_el, context)
+        return [] if rich_text_spans.empty?
+
+        # Notion API has a limit on rich text items per block and total length.
+        # Chunking is handled by Helpers.chunk_rich_text_for_code_block
+        Helpers.chunk_rich_text(rich_text_spans).map do |chunk|
+          { object: 'block', type: 'code', code: { rich_text: chunk, language: lang } }
         end
       end
 
       def self.process_heading_blocks(node, context, level:)
         text = node.text.strip
         return [] if text.empty?
-        rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
+        rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(node, context)
         return [] if rich_text.empty?
+
+        # Notion API has a limit of 2000 characters for heading rich_text content.
+        # Chunking is handled by Helpers.chunk_rich_text_for_heading
         Helpers.chunk_rich_text(rich_text).map do |chunk|
-          {
-            object: 'block',
-            type:   "heading_#{level}",
-            "heading_#{level}".to_sym => { rich_text: chunk }
-          }
+          { object: 'block', type: "heading_#{level}", "heading_#{level}".to_sym => { rich_text: chunk } }
         end
       end
 
       def self.process_quote_block(node, context)
-        text = node.text.strip
-        return [] if text.empty?
-        spans = Utils::MediaExtractor::RichText.extract_rich_text_from_string(text, context)
-        return [] if spans.empty?
-        Helpers.chunk_rich_text(spans).map do |chunk|
-          {
-            object: 'block',
-            type:   'quote',
-            quote:  { rich_text: chunk }
-          }
+        # For quotes, we want to preserve the structure including newlines within the blockquote.
+        # extract_rich_text_from_node should handle this by creating separate text objects for lines.
+        rich_text_spans = Utils::MediaExtractor::RichText.extract_rich_text_from_fragment(node, context)
+        return [] if rich_text_spans.empty?
+
+        # Notion API has a limit on rich text items per block and total length.
+        # Chunking is handled by Helpers.chunk_rich_text_for_paragraph_like
+        Helpers.chunk_rich_text(rich_text_spans).map do |chunk|
+          { object: 'block', type: 'quote', quote: { rich_text: chunk } }
         end
       end
 
       def self.inside_bc_attachment?(node)
-        node.ancestors.any? { |a| a.name == 'bc-attachment' }
+        # Helper to check if a node is a descendant of a bc-attachment tag
+        # This is to avoid processing children of bc-attachment if they are handled by process_bc_attachment itself.
+        node.ancestors.any? { |ancestor| ancestor.name == 'bc-attachment' }
       end
 
       # ---------------------------------------------------------------
       #  Table
       # ---------------------------------------------------------------
       def self.process_table(table_node, context)
-        rows = table_node.css('tr')
-        return [] if rows.empty?
+        # Basic table to paragraph conversion. Notion's table API is complex.
+        # This creates a paragraph for each row, with cells tab-separated.
+        # A more advanced conversion could create actual Notion tables if needed.
+        table_rows_data = []
+        has_header = !table_node.css('thead th').empty?
 
-        blocks = []
-        rows.each do |tr|
-          cells = tr.css('th, td').map { |c| c.text.strip }.reject(&:empty?)
-          next if cells.empty?
-          row_text = cells.join(" \t ")
-          blocks.concat Notion::Helpers.text_blocks(row_text, context)
+        table_node.css('tr').each_with_index do |tr, row_index|
+          row_cells = []
+          tr.css('th, td').each do |cell_node|
+            # Extract rich text from each cell to preserve formatting
+            cell_rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_node(cell_node, "#{context}_table_cell_r#{row_index}")
+            row_cells << cell_rich_text
+          end
+          table_rows_data << { cells: row_cells, is_header_row: (has_header && row_index == 0) }
         end
-        blocks
+
+        return [] if table_rows_data.empty?
+
+        # For simplicity, convert to paragraphs or a code block representation for now.
+        # True Notion tables require a different structure.
+        # Let's try to format it as a series of paragraphs or a single code block.
+        content_for_code_block = table_rows_data.map do |row_data|
+          row_data[:cells].map do |cell_rt_array|
+            cell_rt_array.map { |rt| rt[:text][:content] }.join
+          end.join(" \t|\t ") # Join cells with a tab-pipe-tab separator
+        end.join("\n") # Join rows with newline
+
+        return [] if content_for_code_block.strip.empty?
+
+        # Create a code block for the table content
+        [{
+          object: 'block',
+          type: 'code',
+          code: {
+            rich_text: [{ type: 'text', text: { content: content_for_code_block } }],
+            language: 'text' # or 'tsv' or a custom identifier
+          }
+        }]
       end
 
       # ---------------------------------------------------------------
       #  <details>/<summary> toggle
       # ---------------------------------------------------------------
-      def self.process_details_toggle(details_node, context)
+      def self.process_details_toggle(details_node, context, failed_attachments_details)
         summary_node = details_node.at_css('summary')
-        summary_text = summary_node&.text&.strip || 'Details'
-        summary_node&.remove
+        summary_text = summary_node&.text&.strip || 'Details' # Default summary if empty
+        summary_node&.remove # Remove summary from body to avoid duplication in children
 
+        # Process the content inside the <details> tag
         body_html = details_node.inner_html.strip
-        body_blocks, _media, embed_blocks =
-          ::Utils::MediaExtractor.extract_and_clean(body_html, nil, "DetailsBody #{context}")
+        body_blocks, _media_files, embed_blocks, failed_toggle_attachments =
+          ::Utils::MediaExtractor.extract_and_clean(body_html, nil, "DetailsToggleBody_#{context}")
+
+        # Propagate any failures from inside the toggle up to the main failed_attachments_details array
+        failed_attachments_details.concat(failed_toggle_attachments) if failed_attachments_details && failed_toggle_attachments.any?
+
+        # Create rich text for summary
+        summary_rich_text = Utils::MediaExtractor::RichText.extract_rich_text_from_string(summary_text, context)
+        return [] if summary_rich_text.empty? && body_blocks.empty? && embed_blocks.empty?
+
+        # Ensure summary_rich_text is not empty for the toggle block
+        summary_rich_text = [{type: 'text', text: {content: 'Details'}}] if summary_rich_text.empty?
+
+        # Chunk summary rich text if it's too long for Notion's toggle summary limit
+        chunked_summary_rich_text = Helpers.chunk_rich_text(summary_rich_text).first || [{type: 'text', text: {content: 'Details'}}]
+
+        toggle_children = (body_blocks + embed_blocks).compact
 
         [{
           object: 'block',
-          type:   'toggle',
+          type: 'toggle',
           toggle: {
-            rich_text: [{ type: 'text', text: { content: summary_text } }],
-            children:  (body_blocks + embed_blocks).compact
+            rich_text: chunked_summary_rich_text,
+            children: toggle_children.empty? ? nil : toggle_children # Notion API expects null or non-empty array for children
           }
         }]
-      rescue => e
-        warn "⚠️ [process_details_toggle] Error: #{e.message} (#{context})"
-        []
+      rescue StandardError => e
+        warn "⚠️ [process_details_toggle] Error processing <details>: #{e.message} (#{context}) - Backtrace: #{e.backtrace.take(3).join(' | ')}"
+        # Fallback: return the summary as a paragraph and the content as best as possible, or a simple error message
+        fallback_blocks = []
+        fallback_blocks.concat(Utils::MediaExtractor::RichText.extract_rich_text_from_string("Error processing toggle: #{summary_text}", context).map do |chunk|
+          { object: 'block', type: 'paragraph', paragraph: { rich_text: chunk } }
+        end)
+        # Optionally, try to dump details_node.inner_html as a code block if toggle processing fails catastrophically
+        # For now, just log the error and return the summary as a paragraph.
+        fallback_blocks
       end
 
       # ---------------------------------------------------------------
@@ -563,6 +568,7 @@ module Utils
         #   raise "Invalid block from #{origin}"
         # end
       end
-    end
-  end
-end
+
+    end # Closes module Handlers
+  end # Closes module MediaExtractor
+end # Closes module Utils
