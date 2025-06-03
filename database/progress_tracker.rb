@@ -4,14 +4,15 @@ require 'sqlite3'
 require 'time'
 require_relative './config'
 require_relative './schema'
+require_relative '../utils/logging'
 
 DB_CREATED = !File.exist?(DB_FILE)
 
 # Auto-create database if missing
 setup_database if DB_CREATED
 
-puts "🗄️ Progress database: #{DB_FILE}"
-puts DB_CREATED ? "📦 Created new database at #{DB_FILE}" : "✅ Existing database found, using #{DB_FILE}"
+Utils::Logging.log "🗄️ Progress database: #{DB_FILE}"
+Utils::Logging.log(DB_CREATED ? "📦 Created new database at #{DB_FILE}" : "✅ Existing database found, using #{DB_FILE}")
 
 class ProgressTracker
   def initialize
@@ -99,6 +100,6 @@ class ProgressTracker
   def export_dump
     dump_file = "sync_progress_#{Time.now.strftime("%Y%m%d-%H%M%S")}.sql"
     `sqlite3 #{DB_FILE} .dump > #{dump_file}`
-    puts "🧩 Progress database exported to: #{dump_file}"
+    Utils::Logging.log "🧩 Progress database exported to: #{dump_file}"
   end
 end

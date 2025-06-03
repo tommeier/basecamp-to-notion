@@ -15,7 +15,7 @@ require_relative "./database/schema" # ✅ Ensure schema is initialized
 require 'zip'
 require 'fileutils'
 
-puts "🚀 Starting Basecamp → Notion sync..."
+Utils::Logging.log "🚀 Starting Basecamp → Notion sync..."
 
 Utils::Dependencies.ensure_imagemagick   # makes `identify` available or logs a warning
 
@@ -39,9 +39,9 @@ cleanup_debug_files = proc do
   files_to_zip = Dir.glob('./tmp/**/*').reject { |f| File.directory?(f) }
 
   if files_to_zip.empty?
-    puts "⚠️ No debug files found to zip."
+    Utils::Logging.warn "No debug files found to zip."
   else
-    puts "🗂️ Zipping up debug files from ./tmp/..."
+    Utils::Logging.debug "🗂️ Zipping up debug files from ./tmp/..."
 
     Zip::File.open(zipfile, Zip::File::CREATE) do |zipfile_out|
       files_to_zip.each do |file|
@@ -50,20 +50,20 @@ cleanup_debug_files = proc do
       end
     end
 
-    puts "✅ Debug files zipped to #{zipfile}"
+    Utils::Logging.log "✅ Debug files zipped to #{zipfile}"
     log "✅ Debug files zipped to #{zipfile}"
   end
 end
 
 # === ✅ Signal handling: set shutdown flag only ===
 Signal.trap("INT") do
-  puts "\n🛑 Interrupt received (Ctrl+C). Initiating shutdown..."
+  Utils::Logging.log "🛑 Interrupt received (Ctrl+C). Initiating shutdown..."
   $shutdown = true
   exit 130 # 128 + SIGINT
 end
 
 Signal.trap("TERM") do
-  puts "\n🛑 Termination signal received (SIGTERM). Initiating shutdown..."
+  Utils::Logging.log "🛑 Termination signal received (SIGTERM). Initiating shutdown..."
   $shutdown = true
   exit 143 # 128 + SIGTERM
 end
@@ -73,28 +73,28 @@ at_exit do
   cleanup_debug_files.call
 
   if $shutdown
-    puts "\n🛑 Shutdown complete. Sync interrupted by user."
+    Utils::Logging.log "🛑 Shutdown complete. Sync interrupted by user."
   else
-    puts "\n✅ Sync completed successfully."
+    Utils::Logging.log "✅ Sync completed successfully."
   end
 end
 
 # === ✅ RESET mode: full fresh start ===
 if ENV["RESET"] == "true"
-  puts "🚨 RESET mode enabled! Deleting progress DB and temp files for fresh start..."
+  Utils::Logging.warn "RESET mode enabled! Deleting progress DB and temp files for fresh start..."
 
   if File.exist?(DB_PATH)
     File.delete(DB_PATH)
-    puts "🧹 Deleted progress DB: #{DB_PATH}"
+    Utils::Logging.log "🧹 Deleted progress DB: #{DB_PATH}"
   else
-    puts "ℹ️ No progress DB found. Skipping."
+    Utils::Logging.log "ℹ️ No progress DB found. Skipping."
   end
 
   if Dir.exist?("./tmp")
     FileUtils.rm_rf(Dir["./tmp/*"])
-    puts "🧹 Cleared ./tmp/ debug files."
+    Utils::Logging.log "🧹 Cleared ./tmp/ debug files."
   else
-    puts "ℹ️ No ./tmp/ directory found. Skipping."
+    Utils::Logging.log "ℹ️ No ./tmp/ directory found. Skipping."
   end
 
   # This clears cached login
@@ -105,7 +105,7 @@ if ENV["RESET"] == "true"
   #   puts "ℹ️ No ./cache/ directory found. Skipping."
   # end
 
-  puts "✅ Reset complete. Starting fresh sync."
+  Utils::Logging.log "✅ Reset complete. Starting fresh sync."
 end
 
 # === ✅ Ensure database schema exists before starting parallel threads ===
@@ -116,11 +116,10 @@ Cleanup.run
 
 # === ✅ Ensure NOTION_API_KEY is set for official API usage ===
 unless ENV['NOTION_API_KEY'] && !ENV['NOTION_API_KEY'].empty?
-  puts "❌ ERROR: NOTION_API_KEY environment variable is not set."
-  puts "Please set it in your .env file with your Notion integration token."
+  Utils::Logging.error "NOTION_API_KEY environment variable is not set. Please set it in your .env file with your Notion integration token."
   exit 1
 end
-puts "✅ NOTION_API_KEY found."
+Utils::Logging.log "✅ NOTION_API_KEY found."
 
 require_relative './utils/media_extractor/resolver'
 
@@ -130,11 +129,11 @@ Utils::MediaExtractor::Resolver.ensure_sessions_at_startup!
 begin
   Notion::Sync.sync_projects
 rescue Interrupt
-  puts "🛑 Sync interrupted by user."
+  Utils::Logging.warn "Sync interrupted by user."
 rescue => e
-  puts "❌ Unhandled error: #{e.message}"
-  puts e.backtrace.join("\n")
+  Utils::Logging.error "Unhandled error: #{e.message}"
+  Utils::Logging.error "Backtrace:\n#{e.backtrace.join("\n")}"
   exit 1
 end
 
-puts "🎉 Sync complete!"
+Utils::Logging.log "🎉 Sync complete!"

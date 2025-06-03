@@ -37,7 +37,7 @@ module Utils
       return unless defined?(DEBUG_FILES) && DEBUG_FILES
       FileUtils.mkdir_p(File.dirname(path))
       File.open(path, "a") { |f| f.puts(content) }
-      puts "📝 Debug file written to: #{path}"
+      Utils::Logging.log "📝 Debug file written to: #{path}"
       append_to_log_file("📝 Debug file written to: #{path}")
     end
 

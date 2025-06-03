@@ -1,5 +1,7 @@
 # utils/block_validator.rb
 
+require_relative './logging'
+
 module BlockValidator
   def self.validate_blocks(blocks, context = nil)
     valid = 0
@@ -10,7 +12,7 @@ module BlockValidator
         valid += 1
       else
         invalid += 1
-        puts "⚠️ Invalid block at index #{idx}#{context ? " (#{context})" : ""}: #{block.inspect[0..500]}"
+        Utils::Logging.warn "Invalid block at index #{idx}#{context ? " (#{context})" : ""}: #{block.inspect[0..500]}"
       end
 
       if block.is_a?(Hash) && block['children']
@@ -20,7 +22,7 @@ module BlockValidator
       end
     end
 
-    puts "🧩 Block validation summary#{context ? " (#{context})" : ""}: ✅ #{valid} valid / 🚫 #{invalid} invalid"
+    Utils::Logging.log "🧩 Block validation summary#{context ? " (#{context})" : ""}: ✅ #{valid} valid / 🚫 #{invalid} invalid"
     [valid, invalid]
   end
 

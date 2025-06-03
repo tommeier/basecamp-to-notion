@@ -20,11 +20,11 @@ module Basecamp
         code = gets.strip
         uri = URI("https://launchpad.37signals.com/authorization/token")
 
-        puts "✅ BASECAMP_CLIENT_ID: #{BASECAMP_CLIENT_ID.inspect}"
-        puts "✅ BASECAMP_CLIENT_SECRET: #{BASECAMP_CLIENT_SECRET.inspect}"
-        puts "✅ BASECAMP_REDIRECT_URI: #{BASECAMP_REDIRECT_URI.inspect}"
+        Utils::Logging.debug "✅ BASECAMP_CLIENT_ID: #{BASECAMP_CLIENT_ID.inspect}"
+        Utils::Logging.debug "✅ BASECAMP_CLIENT_SECRET: #{BASECAMP_CLIENT_SECRET.inspect}"
+        Utils::Logging.debug "✅ BASECAMP_REDIRECT_URI: #{BASECAMP_REDIRECT_URI.inspect}"
 
-        puts "🚀 Payload: #{{
+        Utils::Logging.debug "🚀 Payload: #{{
           type: "web_server",
           client_id: BASECAMP_CLIENT_ID,
           client_secret: BASECAMP_CLIENT_SECRET,

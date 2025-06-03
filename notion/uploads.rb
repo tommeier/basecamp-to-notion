@@ -135,7 +135,7 @@ module Notion
         log_ctx = "[FileUpload.convert_avif_to_png] Context: #{context}"
         return [original_io, original_mime_type, nil] unless original_mime_type == 'image/avif'
 
-        log "#{log_ctx} Detected AVIF image ('#{original_filename}'). Attempting conversion to PNG."
+        debug "#{log_ctx} Detected AVIF image ('#{original_filename}'). Attempting conversion to PNG."
         avif_input_tempfile = nil
         png_output_tempfile = nil
 
@@ -153,13 +153,14 @@ module Notion
           original_io.rewind if original_io.respond_to?(:rewind)
 
           image = MiniMagick::Image.open(avif_input_tempfile.path)
-          image.format 'png'
-          
+          image.format 'png' do |c|
+            c.quality '92' # PNG quality: first digit zlib compression (0-9), second filter type (0-5). '92' is often good.
+          end
           png_output_tempfile = Tempfile.new(['converted_', '.png'], binmode: true)
           image.write(png_output_tempfile.path)
           png_output_tempfile.rewind
 
-          log "#{log_ctx} Successfully converted '#{original_filename}' from AVIF to PNG. New size: #{png_output_tempfile.size} bytes. Tempfile: #{png_output_tempfile.path}"
+          debug "#{log_ctx} Successfully converted '#{original_filename}' from AVIF to PNG. New size: #{png_output_tempfile.size} bytes. Tempfile: #{png_output_tempfile.path}"
           return [png_output_tempfile, 'image/png', png_output_tempfile] # Return new IO, new MIME, and the tempfile for cleanup
         rescue StandardError => e
           error "#{log_ctx} Failed to convert AVIF image '#{original_filename}' to PNG: #{e.message}. Stacktrace: #{e.backtrace.join('\n')}. Proceeding with original AVIF."
@@ -193,28 +194,28 @@ module Notion
 
         initial_file_size_bytes = current_file_io.respond_to?(:size) ? current_file_io.size : -1 # Use -1 or handle if size not available
         initial_file_size_str = initial_file_size_bytes == -1 ? 'N/A' : "#{initial_file_size_bytes} bytes"
-        log "#{log_ctx} Starting Upload for '#{original_filename_str}' (Initial MIME: #{current_mime_type}, Initial Size: #{initial_file_size_str})"
+        debug "#{log_ctx} Starting Upload for '#{original_filename_str}' (Initial MIME: #{current_mime_type}, Initial Size: #{initial_file_size_str})"
 
         # --- MIME Type Detection and AVIF Conversion ---
         current_file_io.rewind if current_file_io.respond_to?(:rewind)
         marcel_mime_type = Marcel::MimeType.for(current_file_io, name: original_filename_str)
         current_file_io.rewind if current_file_io.respond_to?(:rewind)
 
-        log "#{log_ctx} Initial Passed MIME: '#{current_mime_type}', Marcel detected MIME: '#{marcel_mime_type}' for '#{original_filename_str}'"
+        debug "#{log_ctx} Initial Passed MIME: '#{current_mime_type}', Marcel detected MIME: '#{marcel_mime_type}' for '#{original_filename_str}'"
         final_mime_type = marcel_mime_type.to_s.empty? ? current_mime_type : marcel_mime_type
 
         if final_mime_type == 'image/avif'
-          log "#{log_ctx} AVIF image detected ('#{original_filename_str}'). Attempting conversion to PNG."
+          debug "#{log_ctx} AVIF image detected ('#{original_filename_str}'). Attempting conversion to PNG."
           converted_io, converted_mime, temp_png = self.convert_avif_to_png(current_file_io, original_filename_str, final_mime_type, context: "#{context}:avif_conversion")
           if temp_png
-            log "#{log_ctx} AVIF successfully converted to PNG ('#{original_filename_str}'). New MIME: #{converted_mime}, Temp PNG: #{temp_png.path}"
+            debug "#{log_ctx} AVIF successfully converted to PNG ('#{original_filename_str}'). New MIME: #{converted_mime}, Temp PNG: #{temp_png.path}"
             current_file_io = converted_io
             final_mime_type = converted_mime
             png_tempfile_to_cleanup = temp_png
           elsif converted_mime != final_mime_type
-            log "#{log_ctx} AVIF conversion failed or was skipped for '#{original_filename_str}'. Proceeding with original MIME: #{final_mime_type}."
+            debug "#{log_ctx} AVIF conversion failed or was skipped for '#{original_filename_str}'. Proceeding with original MIME: #{final_mime_type}."
           else
-            log "#{log_ctx} AVIF conversion helper returned original IO for '#{original_filename_str}'. Proceeding with original MIME: #{final_mime_type}."
+            debug "#{log_ctx} AVIF conversion helper returned original IO for '#{original_filename_str}'. Proceeding with original MIME: #{final_mime_type}."
           end
         end
         # --- End AVIF Conversion Logic ---
@@ -225,7 +226,7 @@ module Notion
 
         begin
           is_supported_mime = SUPPORTED_MIME_TYPES.include?(final_mime_type)
-          log "#{log_ctx} Final MIME type for upload: '#{final_mime_type}' for '#{original_filename_str}'. Supported by Notion: #{is_supported_mime}"
+          debug "#{log_ctx} Final MIME type for upload: '#{final_mime_type}' for '#{original_filename_str}'. Supported by Notion: #{is_supported_mime}"
           unless is_supported_mime
             warn "#{log_ctx} MIME type '#{final_mime_type}' for '#{original_filename_str}' is not in Notion supported types. Skipping upload."
             return { success: false, file_upload_id: nil, filename: original_filename_str, notion_url: nil, mime_type: final_mime_type, error: "MIME type not supported by Notion API: #{final_mime_type}" }
@@ -238,11 +239,11 @@ module Notion
 
           current_file_io.rewind if current_file_io.respond_to?(:rewind)
           content_length = current_file_io.size
-          log "#{log_ctx} Final content length for '#{original_filename_str}' before upload: #{content_length} bytes."
+          debug "#{log_ctx} Final content length for '#{original_filename_str}' before upload: #{content_length} bytes."
           # Reference constants from Notion::API module
-          log "#{log_ctx} Max single-part upload size (from Notion::API): #{Notion::API::SINGLE_PART_MAX_SIZE_BYTES} bytes. Multi-part chunk size (from Notion::API): #{Notion::API::MULTI_PART_CHUNK_SIZE_BYTES} bytes."
+          debug "#{log_ctx} Max single-part upload size (from Notion::API): #{Notion::API::SINGLE_PART_MAX_SIZE_BYTES} bytes. Multi-part chunk size (from Notion::API): #{Notion::API::MULTI_PART_CHUNK_SIZE_BYTES} bytes."
 
-          log "#{log_ctx} Initiating upload session with Notion API for '#{original_filename_str}'..."
+          debug "#{log_ctx} Initiating upload session with Notion API for '#{original_filename_str}'..."
           start_response = Notion::API.start_file_upload(original_filename_str, final_mime_type, content_length, context: "#{context}:start_upload")
           unless start_response[:success]
             error "#{log_ctx} Failed to start Notion file upload session for '#{original_filename_str}'. Error: #{start_response[:error]}. Details: #{start_response.inspect}"
@@ -255,18 +256,18 @@ module Notion
           filename_for_notion = start_response[:filename_for_notion]
           number_of_parts_from_api = start_response[:number_of_parts] # Might be nil if not multi-part
 
-          log "#{log_ctx} Notion API initiated upload session for '#{filename_for_notion}'. FileUploadID: #{file_upload_id}. Upload URL: #{upload_url_for_send}. Is Multi-part: #{is_multi_part}. Number of parts (from API): #{number_of_parts_from_api || 'N/A'}."
+          debug "#{log_ctx} Notion API initiated upload session for '#{filename_for_notion}'. FileUploadID: #{file_upload_id}. Upload URL: #{upload_url_for_send}. Is Multi-part: #{is_multi_part}. Number of parts (from API): #{number_of_parts_from_api || 'N/A'}."
 
           if is_multi_part
             # Reference constants from Notion::API module
-            log "#{log_ctx} Proceeding with MULTI-PART upload for '#{filename_for_notion}' (ID: #{file_upload_id}). Total parts: #{number_of_parts_from_api}. Chunk size (from Notion::API): #{Notion::API::MULTI_PART_CHUNK_SIZE_BYTES} bytes."
+            debug "#{log_ctx} Proceeding with MULTI-PART upload for '#{filename_for_notion}' (ID: #{file_upload_id}). Total parts: #{number_of_parts_from_api}. Chunk size (from Notion::API): #{Notion::API::MULTI_PART_CHUNK_SIZE_BYTES} bytes."
             all_parts_sent_successfully = true
             multi_part_error_details = nil
 
             (1..number_of_parts_from_api).each do |part_number|
               current_file_io.rewind if part_number == 1 && current_file_io.respond_to?(:rewind)
               # Use Notion::API::MULTI_PART_CHUNK_SIZE_BYTES for reading chunks
-              chunk_data = current_file_io.read(Notion::API::MULTI_PART_CHUNK_SIZE_BYTES) 
+              chunk_data = current_file_io.read(Notion::API::MULTI_PART_CHUNK_SIZE_BYTES)
               break unless chunk_data && !chunk_data.empty?
 
               temp_chunk_file = Tempfile.new(["notion_upload_part_#{part_number}_of_#{number_of_parts_from_api}_", File.extname(filename_for_notion)], binmode: true)
@@ -274,7 +275,7 @@ module Notion
               temp_chunk_file.write(chunk_data)
               temp_chunk_file.rewind
 
-              log "#{log_ctx} Sending part #{part_number}/#{number_of_parts_from_api} for '#{filename_for_notion}' (chunk size: #{temp_chunk_file.size} bytes) from tempfile: #{temp_chunk_file.path}"
+              debug "#{log_ctx} Sending part #{part_number}/#{number_of_parts_from_api} for '#{filename_for_notion}' (chunk size: #{temp_chunk_file.size} bytes) from tempfile: #{temp_chunk_file.path}"
               send_part_response = Notion::API.send_file_data(upload_url_for_send, temp_chunk_file.path, final_mime_type, filename_for_notion, part_number: part_number, context: "#{context}:send_multi_part_#{part_number}")
               temp_chunk_file.close # Close immediately after send_file_data has read it
 
@@ -284,16 +285,16 @@ module Notion
                 all_parts_sent_successfully = false
                 break
               end
-              log "#{log_ctx} Successfully sent part #{part_number}/#{number_of_parts_from_api} for '#{filename_for_notion}'."
+              debug "#{log_ctx} Successfully sent part #{part_number}/#{number_of_parts_from_api} for '#{filename_for_notion}'."
             end
 
             unless all_parts_sent_successfully
               error_msg = multi_part_error_details || "One or more parts failed during multi-part upload for '#{filename_for_notion}'."
-              log "#{log_ctx} Aborting multi-part upload for '#{filename_for_notion}' (ID: #{file_upload_id}) due to part failure."
+              warn "#{log_ctx} Aborting multi-part upload for '#{filename_for_notion}' (ID: #{file_upload_id}) due to part failure."
               return { success: false, file_upload_id: file_upload_id, filename: original_filename_str, notion_url: nil, mime_type: final_mime_type, error: error_msg }
             end
 
-            log "#{log_ctx} All #{number_of_parts_from_api} parts sent successfully for '#{filename_for_notion}'. Completing multi-part upload (ID: #{file_upload_id})..."
+            debug "#{log_ctx} All #{number_of_parts_from_api} parts sent successfully for '#{filename_for_notion}'. Completing multi-part upload (ID: #{file_upload_id})..."
             complete_response = Notion::API.complete_multi_part_upload(file_upload_id, context: "#{context}:complete_multi_part")
 
             unless complete_response[:success]
@@ -305,32 +306,32 @@ module Notion
             return { success: true, file_upload_id: file_upload_id, filename: filename_for_notion, notion_url: complete_response[:notion_url], mime_type: final_mime_type, error: nil }
 
           else # Single-part upload
-            log "#{log_ctx} Proceeding with SINGLE-PART upload for '#{filename_for_notion}' (ID: #{file_upload_id})."
+            debug "#{log_ctx} Proceeding with SINGLE-PART upload for '#{filename_for_notion}' (ID: #{file_upload_id})."
             path_for_send_data = nil
 
             if current_file_io.respond_to?(:path) && current_file_io.path && File.exist?(current_file_io.path)
               path_for_send_data = current_file_io.path
               current_file_io.rewind if current_file_io.respond_to?(:rewind)
-              log "#{log_ctx} Using existing file path for single-part upload: #{path_for_send_data}"
+              debug "#{log_ctx} Using existing file path for single-part upload: #{path_for_send_data}"
             else
-              log "#{log_ctx} IO for single-part upload ('#{filename_for_notion}') is not a direct file path or path is invalid. Creating temporary file."
+              debug "#{log_ctx} IO for single-part upload ('#{filename_for_notion}') is not a direct file path or path is invalid. Creating temporary file."
               single_part_temp_io = Tempfile.new(["notion_single_upload_", File.extname(filename_for_notion)], binmode: true)
               current_file_io.rewind if current_file_io.respond_to?(:rewind)
               bytes_written_to_temp = single_part_temp_io.write(current_file_io.read)
               single_part_temp_io.flush
               single_part_temp_io.rewind
               path_for_send_data = single_part_temp_io.path
-              log "#{log_ctx} Created temporary file for single-part upload: #{path_for_send_data} (wrote #{bytes_written_to_temp} bytes)."
+              debug "#{log_ctx} Created temporary file for single-part upload: #{path_for_send_data} (wrote #{bytes_written_to_temp} bytes)."
             end
 
-            log "#{log_ctx} Sending single-part file data for '#{filename_for_notion}' (size: #{File.size(path_for_send_data)} bytes) from path: #{path_for_send_data} to URL: #{upload_url_for_send}"
+            debug "#{log_ctx} Sending single-part file data for '#{filename_for_notion}' (size: #{File.size(path_for_send_data)} bytes) from path: #{path_for_send_data} to URL: #{upload_url_for_send}"
             send_response = Notion::API.send_file_data(upload_url_for_send, path_for_send_data, final_mime_type, filename_for_notion, context: "#{context}:send_single_part")
 
             unless send_response[:success]
               error "#{log_ctx} Failed to send single-part file data for '#{filename_for_notion}' (ID: #{file_upload_id}). Error: #{send_response[:error]}. Details: #{send_response.inspect}"
               return { success: false, file_upload_id: file_upload_id, filename: original_filename_str, notion_url: nil, mime_type: final_mime_type, error: send_response[:error] }
             end
-            
+
             final_notion_url = start_response[:notion_url_after_upload] # This URL comes from the initial start_file_upload response for single-part
             log "#{log_ctx} SINGLE-PART upload successful for '#{filename_for_notion}' (ID: #{file_upload_id}). Notion URL: #{final_notion_url}"
             return { success: true, file_upload_id: file_upload_id, filename: filename_for_notion, notion_url: final_notion_url, mime_type: final_mime_type, error: nil }
@@ -348,29 +349,29 @@ module Notion
             error: error_message
           }
         ensure
-          log "#{log_ctx} Entering ensure block for '#{original_filename_str}'. Cleaning up temporary files..."
+          debug "#{log_ctx} Entering ensure block for '#{original_filename_str}'. Cleaning up temporary files..."
           temp_chunk_files.each_with_index do |f, index|
-            log "#{log_ctx} Cleaning up temp chunk file #{index + 1}/#{temp_chunk_files.size}: #{f.path}" if f.respond_to?(:path)
+            debug "#{log_ctx} Cleaning up temp chunk file #{index + 1}/#{temp_chunk_files.size}: #{f.path}" if f.respond_to?(:path)
             f.close unless f.closed?
             f.unlink if f.respond_to?(:unlink)
           end
           if single_part_temp_io
-            log "#{log_ctx} Cleaning up single-part temp IO: #{single_part_temp_io.path}" if single_part_temp_io.respond_to?(:path)
+            debug "#{log_ctx} Cleaning up single-part temp IO: #{single_part_temp_io.path}" if single_part_temp_io.respond_to?(:path)
             single_part_temp_io.close unless single_part_temp_io.closed?
             single_part_temp_io.unlink if single_part_temp_io.respond_to?(:unlink)
           end
           if png_tempfile_to_cleanup
-            log "#{log_ctx} Cleaning up AVIF conversion temp PNG: #{png_tempfile_to_cleanup.path}" if png_tempfile_to_cleanup.respond_to?(:path)
+            debug "#{log_ctx} Cleaning up AVIF conversion temp PNG: #{png_tempfile_to_cleanup.path}" if png_tempfile_to_cleanup.respond_to?(:path)
             png_tempfile_to_cleanup.close unless png_tempfile_to_cleanup.closed?
             png_tempfile_to_cleanup.unlink if png_tempfile_to_cleanup.respond_to?(:unlink)
           end
-          log "#{log_ctx} Finished cleanup for '#{original_filename_str}'."
+          debug "#{log_ctx} Finished cleanup for '#{original_filename_str}'."
         end
       end
 
       # Uploads an asset from a Basecamp URL
       def self.upload_from_basecamp_url(basecamp_url, context: nil)
-        log "[FileUpload.upload_from_basecamp_url] Processing Basecamp URL: #{basecamp_url} - Context: #{context}"
+        debug "[FileUpload.upload_from_basecamp_url] Processing Basecamp URL: #{basecamp_url} - Context: #{context}"
         tempfile = nil
         resolved_url = ::Utils::MediaExtractor::Resolver.resolve_basecamp_url(basecamp_url, context) || basecamp_url
         tempfile, mime = ::Utils::MediaExtractor::Uploader.download_with_auth(resolved_url, "#{context}:download_bc_asset")
@@ -384,7 +385,7 @@ module Notion
         original_filename = "basecamp_asset" if original_filename.empty? # Fallback filename
 
         upload_result = upload_to_notion(tempfile, original_filename, mime, context: "#{context}:upload_bc_asset")
-        log "[FileUpload.upload_from_basecamp_url] Upload result for #{original_filename}: #{upload_result.inspect} - Context: #{context}"
+        debug "[FileUpload.upload_from_basecamp_url] Upload result for #{original_filename}: #{upload_result.inspect} - Context: #{context}"
         upload_result
       rescue StandardError => e
         error "[FileUpload.upload_from_basecamp_url] Error: #{e.message} - Context: #{context}"
@@ -398,7 +399,7 @@ module Notion
 
       # Uploads an asset from a Google URL (e.g., Google Drive, Google User Content)
       def self.upload_from_google_url(google_url, context: nil)
-        log "[FileUpload.upload_from_google_url] Processing Google URL: #{google_url} - Context: #{context}"
+        debug "[FileUpload.upload_from_google_url] Processing Google URL: #{google_url} - Context: #{context}"
         tempfile = nil
         resolved_url = ::Utils::MediaExtractor::Resolver.try_browser_resolve(google_url, context)
         unless resolved_url
@@ -439,7 +440,7 @@ module Notion
         original_filename += File.extname(URI(resolved_url).path) if File.extname(original_filename).empty? && !File.extname(URI(resolved_url).path).empty?
 
         upload_result = upload_to_notion(tempfile, original_filename, mime, context: "#{context}:upload_google_asset")
-        log "[FileUpload.upload_from_google_url] Upload result for #{original_filename}: #{upload_result.inspect} - Context: #{context}"
+        debug "[FileUpload.upload_from_google_url] Upload result for #{original_filename}: #{upload_result.inspect} - Context: #{context}"
         upload_result
       rescue StandardError => e
         error "[FileUpload.upload_from_google_url] Error: #{e.message} - Context: #{context}"
