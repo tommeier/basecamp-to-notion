@@ -27,11 +27,7 @@ $shutdown = false
 
 # === ✅ Setup cleanup function for debug files ===
 cleanup_debug_files = proc do
-  include Utils::Logging
-
-  if defined?(flush_log_summary)
-    flush_log_summary
-  end
+  Utils::Logging.flush_log_summary
 
   timestamp = Time.now.strftime('%Y%m%d-%H%M%S')
   zipfile = "./tmp/debug_#{timestamp}.zip"
@@ -51,7 +47,6 @@ cleanup_debug_files = proc do
     end
 
     Utils::Logging.log "✅ Debug files zipped to #{zipfile}"
-    log "✅ Debug files zipped to #{zipfile}"
   end
 end
 
