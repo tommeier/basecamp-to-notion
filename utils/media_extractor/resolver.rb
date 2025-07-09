@@ -30,11 +30,46 @@ module Utils
                        (?<acct>\d+)/blobs/(?<uuid>[0-9a-f-]+)/
                        download/[^/?]+}xi.freeze
 
+      # Matches preview-style URLs that Basecamp generates for images
+      # Example: https://preview.3.basecamp.com/123/blobs/abcd-uuid/previews/full
+      PREVIEW_FULL_RE = %r{\Ahttps://preview\.(?<sub>\d+)\.basecamp\.com/(?<acct>\d+)/blobs/(?<uuid>[0-9a-f-]+)/previews/}i.freeze
+
+      # Matches new "blob-previews" host pattern seen on storage.basecamp.com
+      # Example: https://storage.basecamp.com/bc4-production-blob-previews/<uuid>?...
+      STORAGE_BLOB_PREVIEW_RE = %r{\Ahttps://storage(?:\.\d+)?\.basecamp\.com/(?<bucket>[^/]+)-blob-previews/(?<uuid>[0-9a-f-]+)}i.freeze
+
       def self.preview_url_for(download_url)
         m = DOWNLOAD_RE.match(download_url)
         return nil unless m
 
         "https://preview.3.basecamp.com/#{m[:acct]}/blobs/#{m[:uuid]}/previews/full"
+      end
+
+      # ------------------------------------------------------------------
+      # Attempt to reconstruct the ORIGINAL /download/ URL when given a
+      # preview/thumbnail URL. Returns nil if pattern not recognised.
+      # We do this entirely offline (string manipulation) – no network call –
+      # so it is cheap to try before firing up the browser.
+      #
+      #   preview URL    -> https://preview.3.basecamp.com/123/blobs/UUID/previews/full
+      #   download URL   -> https://storage.3.basecamp.com/123/blobs/UUID/download/image.png
+      #
+      # For the new storage.basecamp.com blob-previews pattern we *cannot*
+      # deterministically guess the original filename, so we return nil and
+      # fall back to the existing browser-resolve path (which already handles
+      # redirects to the CDN variant).
+      # ------------------------------------------------------------------
+
+      def self.original_download_url_for_preview(preview_url)
+        if (m = PREVIEW_FULL_RE.match(preview_url))
+          acct = m[:acct]
+          uuid = m[:uuid]
+          # We do not know the original filename here; Basecamp will redirect
+          # to a CloudFront URL that includes the filename. However, the plain
+          # /download endpoint works without a filename segment.
+          return "https://storage.3.basecamp.com/#{acct}/blobs/#{uuid}/download"
+        end
+        nil
       end
 
       CLOUDFRONT_RE = %r{\Ahttps://.+\.cloudfront\.net/}i.freeze
@@ -79,7 +114,26 @@ module Utils
           return @resolved_url_cache[url] = orig
         end
 
-        # B. Quick HEAD check for now‑deleted attachments
+        # ⬆️ EXTRA: If the URL looks like a preview, attempt to derive the
+        #          original /download link first; if that responds 2xx we can
+        #          skip costly browser work and get full-resolution bytes.
+        if (derived = original_download_url_for_preview(url))
+          begin
+            uri = URI(derived)
+            headers = Utils::MediaExtractor.basecamp_headers || {}
+            Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https') do |http|
+              res = http.request(Net::HTTP::Head.new(uri, headers))
+              if res.code.to_i.between?(200, 399)
+                log "✅ Derived original download URL #{derived} (#{context})"
+                return @resolved_url_cache[url] = derived
+              end
+            end
+          rescue => e
+            debug "🔸 Derived original URL check failed: #{e.class}: #{e.message} (#{context})"
+          end
+        end
+
+        # B. Quick HEAD check for now-deleted attachments
         begin
           uri = URI(url)
           if uri.path =~ /\/attachments\/(\d+)/
@@ -249,17 +303,33 @@ module Utils
         nil
       end
 
-      def self.embeddable_media_url?(url)
-        url.match?(/(giphy|youtube|vimeo|instagram|twitter|loom|figma|miro)\.com/i)
-      end
-
-      def self.basecamp_asset_url?(url)
-        url.match?(/\b(preview\.3\.basecamp\.com|storage\.3\.basecamp\.com)\b/)
-      end
-
-      def self.basecamp_cdn_url?(url)
-        url.match?(/(basecamp-static\.com|bc3-production-assets-cdn\.basecamp-static\.com)/)
-      end
-    end
-  end
+def self.embeddable_media_url?(url)
+  url.match?(/(giphy|youtube|vimeo|instagram|twitter|loom|figma|miro)\.com/i)
 end
+
+# Detects whether a URL still points to a Basecamp-hosted asset that is
+# not publicly cacheable (requires cookies / signed URL). We treat both
+# numeric sub-domains (e.g. preview.3.basecamp.com) *and* the newer
+# non-numeric hosts that Basecamp has started to roll out (e.g.
+# storage.basecamp.com, preview.basecamp.com) as private.
+#
+# This broader detection is necessary so that assets such as
+# "https://storage.basecamp.com/bc4-production-blob-previews/..." are
+# recognised as private and therefore routed through the Notion upload
+# pipeline rather than being left as external preview links.
+
+def self.basecamp_asset_url?(url)
+  url.match?(%r{\b(?:preview|storage)(?:\.\d+)?\.basecamp\.com\b}i)
+end
+
+def self.basecamp_cdn_url?(url)
+  url.match?(/(basecamp-static\.com|bc3-production-assets-cdn\.basecamp-static\.com)/)
+end
+
+# ------------------------------------------------------------------
+# End of helper predicates
+# ------------------------------------------------------------------
+
+    end # module Resolver
+  end   # module MediaExtractor
+end     # module Utils

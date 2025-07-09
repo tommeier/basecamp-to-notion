@@ -20,6 +20,8 @@ EXCLUDE_PROJECT_LABEL  = ENV.fetch("EXCLUDE_PROJECT_LABEL", nil)
 FILTER_TOOL_NAME       = ENV.fetch("FILTER_TOOL_NAME", nil)
 
 # === RUNTIME FLAGS ===
+# Disable "🔒" and "📦" prefixes on project names when true.
+DISABLE_PROJECT_EMOJI_PREFIXES = ENV.fetch('DISABLE_PROJECT_EMOJI_PREFIXES', 'false') == 'true'
 CACHE_ENABLED          = ENV.fetch("CACHE_ENABLED", "false") == "true"
 
 # === OTHER CONFIG ===

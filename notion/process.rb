@@ -46,8 +46,12 @@ module Notion
 
       # Build project name with icons
       project_name = project["name"].dup
-      project_name.prepend("📦 ") if is_archived
-      project_name.prepend("🔒 ") if people_count < 50
+      unless DISABLE_PROJECT_EMOJI_PREFIXES
+        project_name.prepend("📦 ") if is_archived
+      end
+      unless DISABLE_PROJECT_EMOJI_PREFIXES
+        project_name.prepend("🔒 ") if people_count < 50
+      end
 
       existing_project = progress.get_project(project["id"])
       if existing_project && existing_project["notion_page_id"]
