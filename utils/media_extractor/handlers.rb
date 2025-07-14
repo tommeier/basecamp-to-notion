@@ -511,15 +511,26 @@ module Utils
       end
 
       def self.process_bc_attachment(node, context, parent_page_id, failed_attachments_details)
-        # If bc-attachment contains a figure, delegate to process_figure
-        # This handles cases where Basecamp might wrap figures in bc-attachment tags
-        figure_node = node.at_css('figure')
-        if figure_node
+        # 1️⃣ Prefer any *direct* download URL on the <bc-attachment> tag itself.
+        direct_url = [node['href'], node['url'], node['sgid']].compact
+                     .map(&:strip)
+                     .find { |u| !u.empty? }
+
+        if direct_url
+          debug "[process_bc_attachment] Direct URL found: #{direct_url.inspect} (#{context})"
+          return _process_bc_attachment_or_figure(node, direct_url, context, parent_page_id, failed_attachments_details)
+        end
+
+        # 2️⃣ Otherwise fall back to the nested <figure>, which usually only carries
+        #    preview-sized URLs. The downstream resolver will attempt Attachments-API
+        #    lookup if that happens to be a preview URL.
+        if (figure_node = node.at_css('figure'))
+          debug "[process_bc_attachment] Using nested <figure> fallback (#{context})"
           return process_figure(figure_node, context, parent_page_id, failed_attachments_details)
         end
 
-        raw_url = (node['href'] || node['url'] || node['sgid'])&.strip # sgid for direct uploads
-        _process_bc_attachment_or_figure(node, raw_url, context, parent_page_id, failed_attachments_details)
+        warn "⚠️ [process_bc_attachment] No usable URL found — skipping (#{context})"
+        []
       end
 
       def self.process_anchor_img(anchor_node, context, parent_page_id, failed_attachments_details)

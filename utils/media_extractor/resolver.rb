@@ -14,6 +14,7 @@ require_relative './../../utils/basecamp_session'
 require_relative './../../utils/google_session'
 require_relative '../retry_utils'
 require_relative '../../config'
+require_relative '../../utils/http' # HTTP helper with retry logic
 
 module Utils
   module MediaExtractor
@@ -93,6 +94,9 @@ module Utils
 
       CLOUDFRONT_RE = %r{\Ahttps://.+\.cloudfront\.net/}i.freeze
 
+      # Cache for successful attachments API look-ups: { "acct-id" => [url, ts] }
+      ATTACHMENTS_API_CACHE = {}
+
       def self.still_private_asset?(url)
         url.nil? ||
           basecamp_asset_url?(url) ||            # storage|preview hosts
@@ -104,14 +108,14 @@ module Utils
       # ------------------------------------------------------------------
       RESOLVED_URL_CACHE_TTL_SECONDS = 86_400 # 24 hours (1 day)
 
-# Strip volatile query params (signatures, expiry) so we can reuse cached
-# results for URLs that differ only by new AWS-style signatures.
-# e.g. https://storage.3.basecamp.com/.../download?Signature=ABC&Key-Pair-Id=XYZ
-# becomes https://storage.3.basecamp.com/.../download
+        # Strip volatile query params (signatures, expiry) so we can reuse cached
+        # results for URLs that differ only by new AWS-style signatures.
+        # e.g. https://storage.3.basecamp.com/.../download?Signature=ABC&Key-Pair-Id=XYZ
+        # becomes https://storage.3.basecamp.com/.../download
 
         def self.cache_key_for(url)
-  return url unless url.is_a?(String)
-            url.split('?').first
+          return url unless url.is_a?(String)
+          url.split('?').first
         end
 
         # Detect fully-signed S3-style URLs (contain signature params).
@@ -122,9 +126,50 @@ module Utils
           uri = URI.parse(url) rescue nil
           return false unless uri && uri.query
 
+          # Exclude preview buckets / hosts – these are low-resolution assets that we
+          # still want to up-level via the attachments API or browser flow.
+          host = uri.host.to_s.downcase
+          path = uri.path.to_s
+          if host.match?(/\bpreview\./) || path.match?(/-blob-previews\//)
+            return false
+          end
+
           sig_params = %w[Signature X-Amz-Signature Expires X-Amz-Expires].map(&:downcase)
           query_keys = URI.decode_www_form(uri.query).map { |k, _| k.downcase }
           !sig_params.intersection(query_keys).empty?
+        end
+
+        # Attempt to fetch the original download URL via Basecamp Attachments
+        # API when given any URL that contains the numeric attachment ID.
+        ATTACHMENTS_RE = %r{\Ahttps://[^/]+/(?<acct>\d+)/attachments/(?<attach_id>\d+)}i.freeze
+
+        def self.fetch_original_via_attachments_api(url, context)
+          return nil unless (m = ATTACHMENTS_RE.match(url))
+          acct_id   = m[:acct]
+          attach_id = m[:attach_id]
+          cache_key = "#{acct_id}:#{attach_id}"
+
+          if (entry = ATTACHMENTS_API_CACHE[cache_key])
+            val, ts = entry
+            return val if Time.now - ts < RESOLVED_URL_CACHE_TTL_SECONDS
+            ATTACHMENTS_API_CACHE.delete(cache_key)
+          end
+
+          api_url = "https://3.basecampapi.com/#{acct_id}/attachments/#{attach_id}.json"
+          headers = Utils::MediaExtractor.basecamp_headers || {}
+          begin
+            json = Utils::HTTP.get_json(URI(api_url), headers, context: "attachments_api #{context}")
+            if (dl = json['download_url'])
+              log " [attachments_api] id=#{attach_id} → #{dl} (#{context})"
+              ATTACHMENTS_API_CACHE[cache_key] = [dl, Time.now]
+              return dl
+            else
+              warn " [attachments_api] id=#{attach_id} – download_url missing (#{context})"
+            end
+          rescue => e
+            warn " [attachments_api] #{api_url} #{e.class}: #{e.message} (#{context})"
+          end
+          nil
         end
 
         @resolved_url_cache = {}
@@ -181,6 +226,12 @@ module Utils
         # ⬆️ EXTRA: If the URL looks like a preview, attempt to derive the
         #          original /download link first; if that responds 2xx we can
         #          skip costly browser work and get full-resolution bytes.
+                # 🔗 Try Attachments API early – will provide full-resolution download URL
+        if (api_dl = fetch_original_via_attachments_api(url, context))
+          @resolved_url_cache[cache_key] = [api_dl, Time.now]
+          return api_dl
+        end
+
         if (derived = original_download_url_for_preview(url))
           begin
             uri = URI(derived)
