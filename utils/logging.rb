@@ -27,7 +27,7 @@ module Utils
     end
 
     def self.debug(message)
-      return unless ENV['DEBUG'] == 'true'
+      return unless ENV['DEBUG'] == 'true' || ENV['LOG_LEVEL'] == 'debug'
       formatted = format_log("🐛 DEBUG: #{message}")
       puts formatted
       append_to_log_file(formatted)

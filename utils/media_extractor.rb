@@ -29,7 +29,7 @@ module Utils
     end
 
     # Define known block-level tags that have specific handlers or should break inline groups
-    BLOCK_TAG_NAMES = %w[div p ul ol figure h1 h2 h3 blockquote pre hr iframe li].freeze
+    BLOCK_TAG_NAMES = %w[div p ul ol figure h1 h2 h3 blockquote pre hr iframe li img].freeze
 
     @logged_manual_uploads = Set.new
 

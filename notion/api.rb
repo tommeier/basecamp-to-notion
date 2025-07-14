@@ -55,12 +55,12 @@ module Notion
       effective_name = name.nil? || name.strip.empty? ? "untitled_file_#{Time.now.to_i}" : name
 
       unless File.extname(effective_name).empty?
-        log "#{log_ctx} Name '#{effective_name}' already has an extension. Returning as is."
+        debug "#{log_ctx} Name '#{effective_name}' already has an extension. Returning as is."
         return effective_name
       end
 
       unless mime_type
-        log "#{log_ctx} Mime_type is nil for '#{effective_name}'. Returning as is."
+        debug "#{log_ctx} Mime_type is nil for '#{effective_name}'. Returning as is."
         return effective_name
       end
 
@@ -93,10 +93,10 @@ module Notion
 
       if ext
         modified_name = "#{File.basename(effective_name, '.*')}#{ext}" # Ensure no double extensions if base had one somehow
-        log "#{log_ctx} Determined extension '#{ext}' for mime_type '#{mime_type}'. Modified name: '#{modified_name}'"
+        debug "#{log_ctx} Determined extension '#{ext}' for mime_type '#{mime_type}'. Modified name: '#{modified_name}'"
         return modified_name
       else
-        log "#{log_ctx} No extension determined for mime_type '#{mime_type}'. Returning original name '#{effective_name}'."
+        debug "#{log_ctx} No extension determined for mime_type '#{mime_type}'. Returning original name '#{effective_name}'."
         return effective_name
       end
     end
@@ -106,11 +106,11 @@ module Notion
     # https://developers.notion.com/docs/sending-larger-files#step-2-start-a-file-upload
     def self.start_file_upload(original_filename, mime_type, file_size_bytes, context: nil)
       log_ctx = "[Notion::API.start_file_upload] Context: #{context}"
-      log "#{log_ctx} Initiating for: '#{original_filename}', MIME: '#{mime_type}', Size: #{file_size_bytes} bytes"
+      debug "#{log_ctx} Initiating for: '#{original_filename}', MIME: '#{mime_type}', Size: #{file_size_bytes} bytes"
 
       api_url = URI("#{NOTION_API_BASE_URL}/v1/file_uploads")
       filename_for_payload = filename_with_extension(original_filename, mime_type, context: "#{context}:filename_helper_for_start")
-      
+
       payload = {}
       is_multi_part = file_size_bytes > SINGLE_PART_MAX_SIZE_BYTES
 
@@ -119,17 +119,18 @@ module Notion
         payload[:mode] = "multi_part"
         payload[:number_of_parts] = number_of_parts
         payload[:filename] = filename_for_payload # Required for multi-part start
-        log "#{log_ctx} Multi-part upload detected. Parts: #{number_of_parts}, Filename for payload: #{filename_for_payload}"
+        debug "#{log_ctx} Multi-part upload detected. Parts: #{number_of_parts}, Filename for payload: #{filename_for_payload}"
       else
         # For single-part, filename is sent via x-notion-filename header in the next step,
         # but the docs for "Create a file upload object" show an empty payload {}
         # and the response includes filename: null.
         # The filename seems to be set during the actual file content POST for single-part.
-        log "#{log_ctx} Single-part upload detected. Filename for reference: #{filename_for_payload}"
+        debug "#{log_ctx} Single-part upload detected. Filename for reference: #{filename_for_payload}"
       end
 
-      log "#{log_ctx} POSTing to #{api_url} with payload: #{payload.inspect}"
+      debug "#{log_ctx} POSTing to #{api_url} with payload: #{payload.inspect}"
       response = post_json(api_url, payload, default_headers, context: "#{context}:start_upload_http")
+      debug "#{log_ctx} Response from start_file_upload: #{response.inspect[0..500]}"
 
       unless response && response['id'] && response['upload_url']
         error "#{log_ctx} Failed to start file upload. Response: #{response.inspect}"
@@ -161,7 +162,7 @@ module Notion
     # `mime_type_for_header` is the MIME type of the file (e.g., "image/jpeg")
     def self.send_file_data(upload_url_from_step1, file_path, mime_type_for_header, filename_for_header, part_number: nil, context: nil)
       log_ctx = "[Notion::API.send_file_data] Context: #{context}"
-      log "#{log_ctx} Sending data for: '#{file_path}', Filename: '#{filename_for_header}', MIME: '#{mime_type_for_header}', Part: #{part_number || 'N/A (single)'}"
+      debug "#{log_ctx} Sending data for: '#{file_path}', Filename: '#{filename_for_header}', MIME: '#{mime_type_for_header}', Part: #{part_number || 'N/A (single)'}"
 
       unless File.exist?(file_path)
         error "#{log_ctx} File not found at path: #{file_path}"
@@ -181,10 +182,11 @@ module Notion
         form_parts << ['part_number', part_number.to_s] if part_number
 
         api_url = URI(upload_url_from_step1)
-        log "#{log_ctx} POSTing multipart-form-data to #{api_url}. File: #{file_path}, Part: #{part_number || 'single'}"
+        debug "#{log_ctx} POSTing multipart-form-data to #{api_url}. File: #{file_path}, Part: #{part_number || 'single'}"
 
         headers = default_api_headers_for_file_data_upload.dup
 
+        debug "#{log_ctx} Sending multipart-form-data, headers: #{headers.inspect}, parts: #{form_parts.map { |p| p.first }.inspect}"
         response = ::Utils::HTTP.post_multipart_form_data(
           api_url,
           form_parts, # Pass the array of parts
@@ -192,14 +194,25 @@ module Notion
           context: "#{context}:send_data_http"
         )
 
-        # `post_multipart_form_data` already parses JSON and checks for 2xx
-        # A successful response to POST /send includes status: "uploaded"
-        if response && response.is_a?(Hash) && response['status'] == 'uploaded'
-          log "#{log_ctx} Successfully sent data for '#{file_path}'. Notion status: #{response['status']}. Filename by Notion: #{response['filename']}"
+        # `post_multipart_form_data` already parses JSON and checks for 2xx.
+        # In practice Notion may return an empty body (e.g., 204 No Content) or a JSON
+        # object that contains { "status": "uploaded" }. In earlier scenarios our
+        # helper returns a hash like { success: true, data: nil, code: 204 } which
+        # does *not* include the "status" key. Treat both cases as success.
+        success_condition = response.is_a?(Hash) && (
+          response['status'] == 'uploaded' ||
+          response[:status] == 'uploaded' ||
+          response['success'] == true ||
+          response[:success] == true
+        )
+
+        if success_condition
+          status_for_log = response['status'] || response[:status] || 'implicit-success'
+          debug "#{log_ctx} Successfully sent data for '#{file_path}'. Notion status: #{status_for_log}. Additional response: #{response.inspect}"
           return { success: true, notion_response: response }
-        elsif response && response.is_a?(Hash) # It was a 2xx but status not 'uploaded' or other issue
-          error "#{log_ctx} Sent data for '#{file_path}', but Notion status is not 'uploaded'. Response: #{response.inspect}"
-          return { success: false, error: "Notion status not 'uploaded'", details: response }
+        elsif response && response.is_a?(Hash) # It was a 2xx but unexpected payload
+          warn "#{log_ctx} Sent data for '#{file_path}', received 2xx but could not confirm success. Treating as failure. Response: #{response.inspect}"
+          return { success: false, error: "Unconfirmed success from Notion", details: response }
         else # This case should ideally be caught by post_multipart_form_data's error handling if not 2xx
           error "#{log_ctx} Failed to send data for '#{file_path}'. Response: #{response.inspect}"
           return { success: false, error: "Failed to send file data", details: response }
@@ -220,20 +233,21 @@ module Notion
     # https://developers.notion.com/docs/sending-larger-files#step-4-complete-the-file-upload
     def self.complete_multi_part_upload(file_upload_id, context: nil)
       log_ctx = "[Notion::API.complete_multi_part_upload] Context: #{context}"
-      log "#{log_ctx} Completing multi-part upload for ID: #{file_upload_id}"
+      debug "#{log_ctx} Completing multi-part upload for ID: #{file_upload_id}"
 
       api_url = URI("#{NOTION_API_BASE_URL}/v1/file_uploads/#{file_upload_id}/complete")
       # The payload should be an empty JSON object `{}` according to API reference for this endpoint.
       # However, the docs page for "Sending Larger Files" Step 4 example shows --data '{}' for cURL,
       # which implies Content-Type: application/json.
-      payload = {} 
+      payload = {}
 
-      log "#{log_ctx} POSTing to #{api_url} with payload: #{payload.inspect}"
+      debug "#{log_ctx} POSTing to #{api_url} with payload: #{payload.inspect}"
       response = post_json(api_url, payload, default_headers, context: "#{context}:complete_upload_http")
+      debug "#{log_ctx} Response from complete_multi_part_upload: #{response.inspect[0..500]}"
 
       # A successful response should have status: "uploaded"
       if response && response.is_a?(Hash) && response['status'] == 'uploaded'
-        log "#{log_ctx} Successfully completed multi-part upload for ID: #{file_upload_id}. Notion status: #{response['status']}"
+        debug "#{log_ctx} Successfully completed multi-part upload for ID: #{file_upload_id}. Notion status: #{response['status']}"
         return { success: true, notion_response: response }
       else
         error "#{log_ctx} Failed to complete multi-part upload for ID: #{file_upload_id}. Response: #{response.inspect}"

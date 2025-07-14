@@ -37,6 +37,7 @@ module Notion
       log "  FILTER_PROJECT_LABEL = #{FILTER_PROJECT_LABEL.inspect}"
       log "  EXCLUDE_PROJECT_LABEL = #{EXCLUDE_PROJECT_LABEL.inspect}"
       log "  FILTER_TOOL_NAME = #{FILTER_TOOL_NAME.inspect}"
+      log "  FILTER_MESSAGE_TITLE = #{FILTER_MESSAGE_TITLE.inspect}"
       log "  INCLUDE_ARCHIVED = #{ENV["INCLUDE_ARCHIVED"] == "true"}"
       log "  RESET = #{ENV["RESET"] == "true"}"
       log "  CACHE_ENABLED = #{CACHE_ENABLED}"

@@ -13,6 +13,7 @@ require_relative './logger'
 require_relative './../../utils/basecamp_session'
 require_relative './../../utils/google_session'
 require_relative '../retry_utils'
+require_relative '../../config'
 
 module Utils
   module MediaExtractor
@@ -60,15 +61,33 @@ module Utils
       # redirects to the CDN variant).
       # ------------------------------------------------------------------
 
+      # ------------------------------------------------------------------
+      # Derive an ORIGINAL /download or /blobs URL from common preview URLs.
+      #
+      # 1. Legacy pattern (preview.3.basecamp.com) → /download endpoint
+      # 2. New pattern (storage.basecamp.com/*-blob-previews) → *-blobs bucket
+      #
+      # Both derivations intentionally omit any signed query parameters.  If the
+      # resulting URL is valid, Basecamp will issue a 3xx redirect to a signed
+      # CloudFront URL which is safe to fetch without cookies.  We validate the
+      # guess with a cheap HEAD request before returning it to callers.
+      # ------------------------------------------------------------------
       def self.original_download_url_for_preview(preview_url)
+        # 1️⃣  preview.3.basecamp.com/…/previews/full  →  storage.3.basecamp.com/…/download
         if (m = PREVIEW_FULL_RE.match(preview_url))
           acct = m[:acct]
           uuid = m[:uuid]
-          # We do not know the original filename here; Basecamp will redirect
-          # to a CloudFront URL that includes the filename. However, the plain
-          # /download endpoint works without a filename segment.
           return "https://storage.3.basecamp.com/#{acct}/blobs/#{uuid}/download"
         end
+
+        # 2️⃣  storage.basecamp.com/bc4-production-blob-previews/UUID → …-blobs/UUID
+        #     Another HEAD/GET will then redirect to the signed CloudFront JPEG/PNG.
+        if (m = STORAGE_BLOB_PREVIEW_RE.match(preview_url))
+          bucket = m[:bucket] # e.g. "bc4-production"
+          uuid   = m[:uuid]
+          return "https://storage.basecamp.com/#{bucket}-blobs/#{uuid}"
+        end
+
         nil
       end
 
@@ -77,11 +96,34 @@ module Utils
       def self.still_private_asset?(url)
         url.nil? ||
           basecamp_asset_url?(url) ||            # storage|preview hosts
-          url.match?(CLOUDFRONT_RE)              # signed CloudFront redirect
+          url.match?(CLOUDFRONT_RE) ||           # signed CloudFront redirect
+          ( url.match?(%r{\b3\.basecamp\.com\b}) && url.match?(/[?&]signature=/) ) || # signed assets on 3.basecamp.com
+          url.match?(/[?&]signature=/)           # generic signed URL heuristic
       end
 
       # ------------------------------------------------------------------
-      @resolved_url_cache = {}
+      RESOLVED_URL_CACHE_TTL_SECONDS = 86_400 # 24 hours (1 day)
+
+# Strip volatile query params (signatures, expiry) so we can reuse cached
+# results for URLs that differ only by new AWS-style signatures.
+# e.g. https://storage.3.basecamp.com/.../download?Signature=ABC&Key-Pair-Id=XYZ
+# becomes https://storage.3.basecamp.com/.../download
+
+        def self.cache_key_for(url)
+  return url unless url.is_a?(String)
+            url.split('?').first
+        end
+
+        # Detect fully-signed S3 styled URLs that are already public (contain signature params)
+        def self.signed_s3_basecamp_url?(url)
+          uri = URI.parse(url) rescue nil
+          return false unless uri && uri.query
+          sig_params = %w[Signature X-Amz-Signature Expires X-Amz-Expires].map(&:downcase)
+          query_keys = URI.decode_www_form(uri.query).map { |k, _| k.downcase }
+          !sig_params.intersection(query_keys).empty?
+        end
+
+        @resolved_url_cache = {}
       @@missing_attachments = {}   # 404/410 cache so we skip next time
 
       # Prompt for sessions as early as possible (boot hook calls this)
@@ -101,17 +143,35 @@ module Utils
       # MAIN – attempts a series of increasingly heavy strategies
       # ------------------------------------------------------------------
       def self.resolve_basecamp_url(url, context = nil)
-        return nil                            if @@missing_attachments[url]
-        return @resolved_url_cache[url]       if @resolved_url_cache.key?(url)
+        cache_key = cache_key_for(url)
+
+        return nil if @@missing_attachments[cache_key]
+
+        if (entry = @resolved_url_cache[cache_key])
+          value, ts = entry
+          if Time.now - ts < RESOLVED_URL_CACHE_TTL_SECONDS
+            return value
+          else
+            @resolved_url_cache.delete(cache_key)
+          end
+        end
 
         unless url.is_a?(String) && url =~ URI::DEFAULT_PARSER.make_regexp
           error "❌ [resolve_basecamp_url] Not a URL: #{url.inspect} (#{context})"
           return nil
         end
 
+        # 🚀 Fast-path: Fully-signed Basecamp S3/CDN URL – already public; no browser needed
+        if signed_s3_basecamp_url?(url)
+          log "✅ Signed Basecamp URL detected – skipping browser: #{url} (#{context})"
+          @resolved_url_cache[cache_key] = [url, Time.now]
+          return url
+        end
+
         # A. Proxy wrapper? (…/redirect?u=<orig>)
         if (orig = extract_original_url_from_basecamp_proxy(url))
-          return @resolved_url_cache[url] = orig
+          @resolved_url_cache[cache_key] = [orig, Time.now]
+           return orig
         end
 
         # ⬆️ EXTRA: If the URL looks like a preview, attempt to derive the
@@ -125,7 +185,8 @@ module Utils
               res = http.request(Net::HTTP::Head.new(uri, headers))
               if res.code.to_i.between?(200, 399)
                 log "✅ Derived original download URL #{derived} (#{context})"
-                return @resolved_url_cache[url] = derived
+                @resolved_url_cache[cache_key] = [derived, Time.now]
+                 return derived
               end
             end
           rescue => e
@@ -149,13 +210,14 @@ module Utils
                   json = URI.open(json_url, headers) { |io| JSON.parse(io.read) }
                   if (dl = json['download_url'])
                     log "✅ JSON API gave #{dl} (#{context})"
-                    return @resolved_url_cache[url] = dl
+                    @resolved_url_cache[cache_key] = [dl, Time.now]
+                     return dl
                   end
                 rescue => e
                   warn "⚠️  JSON API failed: #{e.class}: #{e.message} (#{context})"
                 end
                 warn "🚫 Attachment missing: #{url} (#{context})"
-                @@missing_attachments[url] = true
+                @@missing_attachments[cache_key] = true
                 return nil
               end
             end
@@ -171,24 +233,37 @@ module Utils
         #    so let it do the heavy lifting.
         if basecamp_asset_url?(url)
           if (resolved = try_browser_resolve(url, context))
-            return @resolved_url_cache[url] = resolved
+            @resolved_url_cache[cache_key] = [resolved, Time.now]
+             return resolved
           end
           warn "🚫 Browser failed to resolve #{url} (#{context})"
-          @resolved_url_cache[url] = nil
+          @resolved_url_cache[cache_key] = [nil, Time.now]
           return nil
         end
 
-        # D. Plain open – handles already‑public CDN links or non‑Basecamp URLs
+        # C2. Google Blob / lh*.googleusercontent.com assets – need browser session
+        if url.include?('googleusercontent.com') || url.include?('usercontent.google.com')
+          if (resolved = try_browser_resolve(url, context))
+            @resolved_url_cache[cache_key] = [resolved, Time.now]
+             return resolved
+          end
+          warn "🚫 Google browser failed to resolve #{url} (#{context})"
+          @resolved_url_cache[cache_key] = [nil, Time.now]
+          return nil
+        end
+
+        # D. Plain open – handles already-public CDN links or non-Basecamp URLs
         begin
           hdrs = basecamp_cdn_url?(url) ? {} : (Utils::MediaExtractor.basecamp_headers || {})
           URI.open(url, hdrs) do |f|
             final = f.base_uri.to_s rescue url
             log "✅ Resolved: #{final} (#{context})"
-            return @resolved_url_cache[url] = final
+            @resolved_url_cache[cache_key] = [final, Time.now]
+             return final
           end
         rescue => e
           error "❌ Could not resolve #{url} (#{context}) — #{e.message}"
-          @resolved_url_cache[url] = nil
+          @resolved_url_cache[cache_key] = [nil, Time.now]
           nil
         end
       end
@@ -197,7 +272,7 @@ module Utils
       # try_browser_resolve – **unchanged**
       # ------------------------------------------------------------------
       def self.try_browser_resolve(private_url, context)
-        log "🔍 [try_browser_resolve] Using browser session for #{private_url} (#{context})"
+        debug "🔍 [try_browser_resolve] Using browser session for #{private_url} (#{context})"
         begin
           is_google_url = private_url.include?("googleusercontent.com") ||
                           private_url.include?("usercontent.google.com")
@@ -224,20 +299,28 @@ module Utils
                     next # Continue to the next iteration of the inner loop
                   end
 
-                  # If not a 403, wait for redirect
+                  # For many Googleusercontent asset links (e.g., lh*-rt.googleusercontent.com/.../docsz/*), the content is
+                  # served directly without any redirect. Waiting strictly for a URL change therefore causes false timeouts.
+                  #
+                  # Strategy:
+                  #   • Still wait up to `wait_timeout` for a redirect — if one occurs we capture it.
+                  #   • If the wait times out *without* a redirect, treat the *current* URL as the final destination *provided*
+                  #     the page is not a 403 error page (already checked above).
+                  #   • This avoids unnecessary failures while keeping the watchdog logic for genuinely hung navigations.
+                  wait_timeout = BASECAMP_BROWSER_REDIRECT_TIMEOUT_SECONDS # seconds
                   begin
-                    wait_timeout = 20 # seconds
                     Selenium::WebDriver::Wait.new(timeout: wait_timeout).until do
                       current = op_driver.current_url
                       current && current != private_url && !current.start_with?('about:blank')
                     end
+                    final_candidate = op_driver.current_url # Redirect happened
                   rescue Selenium::WebDriver::Error::TimeoutError
-                    warn "⚠️ Google: Timeout (#{wait_timeout}s) waiting for redirect from '#{private_url}'. Failing operation for watchdog."
-                    raise # Re-raise TimeoutError to be caught by execute_operation
+                    warn "⚠️ Google: No redirect from '#{private_url}' after #{wait_timeout}s. Proceeding with original URL."
+                    final_candidate = op_driver.current_url # Likely still private_url
                   end
-                  
-                  # If redirect successful and no 403, break inner loop and return current URL
-                  break op_driver.current_url
+
+                  # Break inner loop, returning whichever URL we have (redirected or original)
+                  break final_candidate
                 end # End inner retry loop
               end # End execute_operation block
 
@@ -263,7 +346,7 @@ module Utils
 
               bc_driver.navigate.to(private_url)
               # Wait up to 20s for a redirect
-              wait_timeout = 20 # seconds
+              wait_timeout = BASECAMP_BROWSER_REDIRECT_TIMEOUT_SECONDS # seconds
               begin
                 Selenium::WebDriver::Wait.new(timeout: wait_timeout).until { bc_driver.current_url != private_url && !bc_driver.current_url.start_with?('about:blank') }
               rescue Selenium::WebDriver::Error::TimeoutError
@@ -275,14 +358,13 @@ module Utils
             final = final_url_from_bc
           end
 
-
-
-
           if final && final =~ URI::DEFAULT_PARSER.make_regexp
             if is_google_url || !basecamp_asset_url?(final)
               log "✅ [try_browser_resolve] Redirect → #{final} (#{context})"
-              return final
+            else
+              log "ℹ️ [try_browser_resolve] No redirect; still Basecamp asset URL. Proceeding with original/private URL #{final} (#{context})"
             end
+            return final
           end
         rescue => e
           warn "⚠️ [try_browser_resolve] Failed: #{e.class}: #{e.message} (#{context})"

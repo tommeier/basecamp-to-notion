@@ -7,6 +7,7 @@ require_relative '../pages'
 require_relative '../../utils/media_extractor'
 require_relative '../../config'
 require_relative '../sanitization'
+require 'thread'
 
 module Notion
   module Handlers
@@ -19,6 +20,13 @@ module Notion
         log "🔧 Handling message board tool: #{tool['title']}"
         url = tool["url"].sub(/\.json$/, '/messages.json')
         messages = Basecamp::Fetch.load_json(URI(url), headers)
+
+        # Apply optional title filter to narrow down to a specific message for faster feedback cycles
+        if defined?(FILTER_MESSAGE_TITLE) && FILTER_MESSAGE_TITLE && !FILTER_MESSAGE_TITLE.empty?
+          before_count = messages.size
+          messages.select! { |m| m["title"]&.match?(/#{FILTER_MESSAGE_TITLE}/i) }
+          log "🔍 FILTER_MESSAGE_TITLE applied (#{FILTER_MESSAGE_TITLE.inspect}) — #{messages.size}/#{before_count} messages match"
+        end
 
         if messages.empty?
           log "📬 No messages found for '#{tool['title']}'"
@@ -147,21 +155,65 @@ module Notion
       end
 
       def self.build_comment_blocks(comments, parent_id)
-        blocks = []
+        sorted = comments.sort_by { |c| c["created_at"] }
+        max_threads = [::COMMENT_UPLOAD_THREADS, 1].max
 
-        comments.sort_by { |c| c["created_at"] }.each_with_index do |comment, idx|
-          context = "Comment by #{comment.dig("creator", "name") || "Unknown"}"
-          blocks << Notion::Helpers.divider_block if idx > 0
-
-          name = comment.dig("creator", "name") || "Unknown"
-          time = Notion::Utils.format_timestamp(comment["created_at"]) rescue "Unknown date"
-          blocks += Notion::Helpers.callout_blocks("👤 #{name} · 🕗 #{time}", "💬", context)
-          blocks << Notion::Helpers.empty_paragraph_block
-
-          body_blocks, _files, embeds = ::Utils::MediaExtractor.extract_and_clean(comment["content"], parent_id, context)
-          blocks += body_blocks + embeds
+        # Fallback to sequential processing when concurrency is disabled
+        if max_threads <= 1
+          return sequential_build_comment_blocks(sorted, parent_id)
         end
 
+        blocks_by_idx = Array.new(sorted.size)
+        thread_pool = []
+
+        sorted.each_with_index do |comment, idx|
+          # Respect pool size limit
+          loop do
+            thread_pool.reject! { |t| !t.alive? }
+            break if thread_pool.size < max_threads
+            sleep 0.01
+          end
+
+          thread_pool << Thread.new(comment, idx) do |c, i|
+            begin
+              local_blocks = []
+              context = "Comment by #{c.dig('creator', 'name') || 'Unknown'}"
+              local_blocks << Notion::Helpers.divider_block if i > 0
+
+              name = c.dig('creator', 'name') || 'Unknown'
+              time = Notion::Utils.format_timestamp(c['created_at']) rescue 'Unknown date'
+              local_blocks += Notion::Helpers.callout_blocks("👤 #{name} · 🕗 #{time}", '💬', context)
+              local_blocks << Notion::Helpers.empty_paragraph_block
+
+              body_blocks, _files, embeds = ::Utils::MediaExtractor.extract_and_clean(c['content'], parent_id, context)
+              local_blocks += body_blocks + embeds
+
+              blocks_by_idx[i] = local_blocks
+            rescue => e
+              warn "❌ Error building comment block idx=#{i}: #{e.class}: #{e.message}"
+            end
+          end
+        end
+
+        thread_pool.each(&:join)
+        blocks_by_idx.compact.flatten
+      end
+
+      # Internal: original sequential logic retained for clarity
+      def self.sequential_build_comment_blocks(sorted_comments, parent_id)
+        blocks = []
+        sorted_comments.each_with_index do |comment, idx|
+          context = "Comment by #{comment.dig('creator', 'name') || 'Unknown'}"
+          blocks << Notion::Helpers.divider_block if idx > 0
+
+          name = comment.dig('creator', 'name') || 'Unknown'
+          time = Notion::Utils.format_timestamp(comment['created_at']) rescue 'Unknown date'
+          blocks += Notion::Helpers.callout_blocks("👤 #{name} · 🕗 #{time}", '💬', context)
+          blocks << Notion::Helpers.empty_paragraph_block
+
+          body_blocks, _files, embeds = ::Utils::MediaExtractor.extract_and_clean(comment['content'], parent_id, context)
+          blocks += body_blocks + embeds
+        end
         blocks
       end
 

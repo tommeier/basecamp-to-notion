@@ -4,6 +4,8 @@ require_relative '../../basecamp/fetch'
 require_relative '../blocks'
 require_relative '../helpers'
 require_relative '../pages'
+require 'thread'
+require 'json'
 require_relative '../../utils/media_extractor'
 
 module Notion
@@ -148,15 +150,61 @@ module Notion
 
         return [] if comments.empty?
 
-        comment_blocks = []
+        sorted = comments.sort_by { |c| c["created_at"] }
+        max_threads = [::COMMENT_UPLOAD_THREADS, 1].max
 
-        comments.sort_by { |c| c["created_at"] }.each_with_index do |comment, idx|
-          comment_context = "#{parent_context} - Comment #{idx + 1} of #{comments.size}"
+        # Sequential path
+        if max_threads <= 1
+          return sequential_fetch_and_build_comments(sorted, page_id, parent_context)
+        end
+
+        blocks_by_idx = Array.new(sorted.size)
+        pool = []
+
+        sorted.each_with_index do |comment, idx|
+          # Respect pool size
+          loop do
+            pool.reject! { |t| !t.alive? }
+            break if pool.size < max_threads
+            sleep 0.01
+          end
+
+          pool << Thread.new(comment, idx) do |c, i|
+            begin
+              local_blocks = []
+              ctx = "#{parent_context} - Comment #{i + 1} of #{sorted.size}"
+
+              local_blocks << Notion::Helpers.divider_block if i > 0
+
+              author_name = c.dig('creator', 'name') || 'Unknown commenter'
+              created_at  = Notion::Utils.format_timestamp(c['created_at']) rescue 'Unknown date'
+              local_blocks += Notion::Helpers.callout_blocks("👤 #{author_name} · 🕗 #{created_at}", '💬', ctx)
+              local_blocks << Notion::Helpers.empty_paragraph_block
+
+              body_blocks, _files, embeds = ::Utils::MediaExtractor.extract_and_clean(c['content'], page_id, ctx)
+              local_blocks += body_blocks.compact + embeds.compact
+
+              blocks_by_idx[i] = local_blocks
+            rescue => e
+              warn "❌ Error building schedule comment idx=#{i}: #{e.class}: #{e.message}"
+            end
+          end
+        end
+
+        pool.each(&:join)
+        blocks_by_idx.compact.flatten
+      end
+
+      # Sequential fallback helper
+      def self.sequential_fetch_and_build_comments(sorted_comments, page_id, parent_context)
+        comment_blocks = []
+        sorted_comments.each_with_index do |comment, idx|
+          comment_context = "#{parent_context} - Comment #{idx + 1} of #{sorted_comments.size}"
 
           comment_blocks << Notion::Helpers.divider_block if idx > 0
 
           author_name = comment.dig("creator", "name") || "Unknown commenter"
-          created_at = Notion::Utils.format_timestamp(comment["created_at"]) rescue "Unknown date"
+          created_at  = Notion::Utils.format_timestamp(comment["created_at"]) rescue "Unknown date"
 
           comment_blocks += Notion::Helpers.callout_blocks("👤 #{author_name} · 🕗 #{created_at}", "💬", comment_context)
           comment_blocks << Notion::Helpers.empty_paragraph_block
@@ -167,12 +215,8 @@ module Notion
             comment_context
           )
 
-          total_blocks = body_blocks.size + embed_blocks.size
-          debug "🧩 MediaExtractor returned #{total_blocks} blocks from comment (#{comment_context})"
-
           comment_blocks += body_blocks.compact + embed_blocks.compact
         end
-
         comment_blocks
       end
     end

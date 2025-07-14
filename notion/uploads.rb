@@ -430,8 +430,20 @@ module Notion
           tempfile, mime = ::Utils::BrowserCapture.fetch(resolved_url, driver, context: "#{context}:fetch_google_asset")
         end
 
-        unless tempfile && mime
-          error "[FileUpload.upload_from_google_url] Failed to download asset from #{resolved_url}. Tempfile: #{tempfile.inspect}, Mime: #{mime.inspect} - Context: #{context}"
+        unless tempfile
+          error "[FileUpload.upload_from_google_url] Failed to download asset from #{resolved_url}. No tempfile created. - Context: #{context}"
+          return nil
+        end
+
+        # If MIME type is missing or generic, attempt to detect using Marcel
+        if mime.nil? || mime.empty? || mime == 'application/octet-stream'
+          detected_mime = ::Marcel::MimeType.for(tempfile, name: File.basename(URI(resolved_url).path))
+          debug "[FileUpload.upload_from_google_url] MIME type inferred via Marcel: #{detected_mime} (was: #{mime.inspect}) - Context: #{context}"
+          mime = detected_mime unless detected_mime.nil? || detected_mime.empty?
+        end
+
+        unless mime && !mime.empty?
+          error "[FileUpload.upload_from_google_url] Could not determine MIME type for asset from #{resolved_url} - Context: #{context}"
           return nil
         end
 
