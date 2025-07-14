@@ -114,30 +114,34 @@ module Utils
             url.split('?').first
         end
 
-        # Detect fully-signed S3 styled URLs that are already public (contain signature params)
+        # Detect fully-signed S3-style URLs (contain signature params).
+        # These are already public and can be fetched without cookies.
+        # We don’t attempt to distinguish preview vs original objects here – that’s
+        # handled elsewhere.
         def self.signed_s3_basecamp_url?(url)
           uri = URI.parse(url) rescue nil
           return false unless uri && uri.query
+
           sig_params = %w[Signature X-Amz-Signature Expires X-Amz-Expires].map(&:downcase)
           query_keys = URI.decode_www_form(uri.query).map { |k, _| k.downcase }
           !sig_params.intersection(query_keys).empty?
         end
 
         @resolved_url_cache = {}
-      @@missing_attachments = {}   # 404/410 cache so we skip next time
+        @@missing_attachments = {}   # 404/410 cache so we skip next time
 
-      # Prompt for sessions as early as possible (boot hook calls this)
-      def self.ensure_sessions_at_startup!
-        log "💻 [Resolver] Starting Basecamp browser session..."
-        Utils::BasecampSession.ensure_cookies!
+        # Prompt for sessions as early as possible (boot hook calls this)
+        def self.ensure_sessions_at_startup!
+          log "💻 [Resolver] Starting Basecamp browser session..."
+          Utils::BasecampSession.ensure_cookies!
 
-        log "💻 [Resolver] Starting Google browser session..."
-        Utils::GoogleSession.prime_session!
+          log "💻 [Resolver] Starting Google browser session..."
+          Utils::GoogleSession.prime_session!
 
-        log "🔍 [Resolver] Browser sessions ready: "\
-            "Basecamp=#{!!Utils::BasecampSession.driver}, "\
-            "Google=#{!!Utils::GoogleSession.driver}"
-      end
+          log "🔍 [Resolver] Browser sessions ready: "\
+              "Basecamp=#{!!Utils::BasecampSession.driver}, "\
+              "Google=#{!!Utils::GoogleSession.driver}"
+        end
 
       # ------------------------------------------------------------------
       # MAIN – attempts a series of increasingly heavy strategies

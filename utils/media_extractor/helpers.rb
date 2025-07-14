@@ -188,6 +188,18 @@ module Utils
         mime ? mime.content_type : 'application/octet-stream'
       end
 
+      # ----------------------
+      # Divider Block Helper
+      # ----------------------
+      # Provides a standardized Notion divider block for callers within
+      # Utils::MediaExtractor that need to insert a visual separator (e.g. for
+      # <hr> tags in Basecamp/HTML content).  Mirrors Notion::Helpers.divider_block
+      # to avoid cross-module coupling.
+      def self.divider_block
+        debug "🧩 [divider_block] Creating divider block"
+        { object: "block", type: "divider", divider: {} }
+      end
+
     end
   end
 end
