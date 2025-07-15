@@ -283,7 +283,9 @@ module Utils
           # ------------------------------------------------------------
           nested_blocks = nested_lists.flat_map { |sub| build_nested_list_blocks(sub, context, seen_nodes, parent_page_id, failed_attachments_details) }
 
-          combined_children = (media_child_blocks + nested_blocks).compact
+          # Flatten to avoid accidental nested empty arrays and drop any falsy / empty items
+          combined_children = (media_child_blocks + nested_blocks).compact.flatten
+          combined_children.reject! { |c| c.nil? || (c.respond_to?(:empty?) && c.empty?) }
 
           if combined_children.any?
             # Avoid deep (>3) nesting that Notion may refuse
