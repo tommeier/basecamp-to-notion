@@ -51,6 +51,29 @@ module Utils
         extract_rich_text_from_fragment(fragment, context)
       end
 
+      # Convenience wrapper to extract rich text from a single Nokogiri node
+      def extract_rich_text_from_node(node, context = nil)
+        return [] unless node
+        fragment = Nokogiri::XML::DocumentFragment.parse("")
+        fragment.add_child(node.dup)
+        extract_rich_text_from_fragment(fragment, context)
+      end
+
+      # Convenience wrapper to extract rich text from all children of a Nokogiri node
+      def extract_rich_text_from_node_children(node, context = nil)
+        return [] unless node
+        fragment = Nokogiri::XML::DocumentFragment.parse("")
+        node.children.each { |child| fragment.add_child(child.dup) }
+        extract_rich_text_from_fragment(fragment, context)
+      end
+
+      def extract_rich_text_from_string(str, context = nil)
+        return [] if str.nil? || str.empty?
+        safe_html = "<div>#{CGI.escapeHTML(str)}</div>"
+        fragment = Nokogiri::HTML.fragment(safe_html)
+        extract_rich_text_from_fragment(fragment, context)
+      end
+
       private
 
       def process_node(node, annotations, link, context)
