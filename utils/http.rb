@@ -52,6 +52,15 @@ module Utils
       OpenSSL::SSL::SSLError # Can occur for transient network/SSL handshake issues
     ].freeze
 
+    # ------------------------------------------------------------------
+    # Toggle whether to persist HTTP request/response payloads to disk.
+    # ------------------------------------------------------------------
+    DUMP_HTTP_PAYLOADS = (ENV['DEBUG'] == 'true' || ENV['LOG_LEVEL'] == 'debug')
+
+    def self.dump_http_payloads?
+      DUMP_HTTP_PAYLOADS
+    end
+
     @@payload_counter = 0
 
     DEFAULT_429_RETRY_AFTER_SECONDS = ENV.fetch('DEFAULT_429_RETRY_AFTER_SECONDS', 5).to_i
@@ -91,11 +100,11 @@ module Utils
         context_slug = (context || 'no_context').downcase.gsub(/\s+/, '_').gsub(/[^\w\-]/, '')
         @@payload_counter += 1
         file_dir = "./tmp/http_payloads"
-        FileUtils.mkdir_p(file_dir)
+        FileUtils.mkdir_p(file_dir) if dump_http_payloads?
         base_filename = "#{file_dir}/#{@@payload_counter.to_s.rjust(4, '0')}_multipart_post_#{context_slug}_#{timestamp}"
 
         request_params_log_filename = "#{base_filename}_request_params.log"
-        
+
         log_prefix = "📤 [HTTP MULTIPART POST]"
         caller_location = caller.first
         debug "#{log_prefix} Caller: #{caller_location}"
@@ -113,30 +122,32 @@ module Utils
           else
             value.to_s.truncate(100) # Truncate potentially long string values
           end
-          
+
           log_entry = "#{key}: #{value_info}"
           log_entry += " (opts: #{opts.inspect})" if opts
           log_entry
         end
         debug "#{log_prefix} Preparing request to #{uri}#{context ? " (#{context})" : ""}"
         debug "#{log_prefix} Form data parts: #{logged_form_data_info.inspect}"
-        File.write(
-          request_params_log_filename, 
+        if dump_http_payloads?
+          File.write(
+            request_params_log_filename,
           "URI: #{uri}\nContext: #{context}\nHeaders (excluding Authorization): #{headers.reject { |k, _| k.downcase == 'authorization' }.inspect}\nForm Data Parts:\n#{JSON.pretty_generate(logged_form_data_info)}"
         )
+        end
 
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = (uri.scheme == 'https')
         # http.set_debug_output($stderr) # Uncomment for deep debugging
 
         req = Net::HTTP::Post.new(uri)
-        
+
         headers.each do |k, v|
           # Content-Type for multipart/form-data is set by set_form, so don't override from general headers.
           req[k.to_s] = v.to_s unless k.downcase == 'content-type'
         end
-        
-        # Pass the form_data_params array directly. 
+
+        # Pass the form_data_params array directly.
         # Net::HTTP::Post::Multipart will create the boundary and format parts.
         req.set_form form_data_params, 'multipart/form-data'
 
@@ -154,7 +165,7 @@ module Utils
         response_filename = "#{base_filename}_response.json"
         debug "#{log_prefix} Response status: #{res.code} (#{elapsed.round(2)}s)"
         debug "#{log_prefix} Saving response payload to: #{response_filename}"
-        File.write(response_filename, body)
+        File.write(response_filename, body) if dump_http_payloads?
 
         if res.code.to_i == 429 # Too Many Requests
           retry_after = (res['Retry-After'] || DEFAULT_429_RETRY_AFTER_SECONDS).to_i
@@ -211,7 +222,7 @@ module Utils
         context_slug = (context || 'no_context').downcase.gsub(/\s+/, '_').gsub(/[^\w\-]/, '')
         @@payload_counter += 1
         file_dir = "./tmp/http_payloads"
-        FileUtils.mkdir_p(file_dir)
+        FileUtils.mkdir_p(file_dir) if dump_http_payloads?
         base_filename = "#{file_dir}/#{@@payload_counter.to_s.rjust(4, '0')}_#{method}_#{context_slug}_#{timestamp}"
 
         request_filename = "#{base_filename}_request.json"
@@ -230,7 +241,7 @@ module Utils
           if payload_size > 900_000
             warn "⚠️ [HTTP] Payload size exceeds 900 KB: #{payload_size} bytes — context: #{context}"
           end
-          File.write(request_filename, payload_json)
+          File.write(request_filename, payload_json) if dump_http_payloads?
         else
           debug "#{log_prefix} Preparing request to #{uri}#{context ? " (#{context})" : ""} (No payload)"
         end
@@ -261,7 +272,7 @@ module Utils
         body = res.body.to_s.encode("UTF-8", invalid: :replace, undef: :replace, replace: "�")
         debug "#{log_prefix} Response status: #{res.code} (#{elapsed.round(2)}s)"
         debug "#{log_prefix} Saving response payload to: #{response_filename}"
-        File.write(response_filename, body)
+        File.write(response_filename, body) if dump_http_payloads?
 
         status_code = res.code.to_i
         if status_code == 429
